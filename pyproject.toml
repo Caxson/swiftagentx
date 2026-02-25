@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "swiftagentx"
+version = "0.1.1"
+description = "Enterprise-grade fast-response Agent framework with dual-model strategy, scenario toolchains, and SSE streaming"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+authors = [
+    { name = "SwiftAgent Team" },
+]
+keywords = ["agent", "llm", "react", "sse", "streaming", "toolchain"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pydantic>=2.0.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+openai = ["httpx>=0.25.0"]
+dashscope = ["dashscope>=1.13.0"]
+flask = ["Flask>=2.0.0"]
+fastapi = ["fastapi>=0.104.0", "uvicorn>=0.24.0"]
+mysql = ["PyMySQL>=1.1.0"]
+all = ["swiftagentx[openai,dashscope,flask,fastapi,mysql]"]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/swiftagent/swiftagent"
+Documentation = "https://swiftagent.readthedocs.io"
+Repository = "https://github.com/swiftagent/swiftagent"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/swiftagentx"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
