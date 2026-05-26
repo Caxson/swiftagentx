@@ -48,6 +48,13 @@ from .pipeline import RequestPipeline
 from .prompt import PromptManager
 from .router import IntentLevel, IntentResult, IntentRouter
 from .skills import Skill, SkillRegistry, parse_skill_markdown
+from .workspace import (
+    InMemoryWorkspaceBackend,
+    LocalDiskWorkspaceBackend,
+    Workspace,
+    WorkspaceBackend,
+    use_workspace,
+)
 from .subagent import (
     SubAgentHandler,
     SubAgentManager,
@@ -143,6 +150,10 @@ class Agent:
 
         # Skill registry — markdown-defined workflows the ReAct loop can invoke.
         self.skills = SkillRegistry()
+
+        # Workspace backend — defaults to local-disk under the system temp
+        # dir. Override via agent.workspace_backend = ... before first use.
+        self.workspace_backend: WorkspaceBackend = LocalDiskWorkspaceBackend()
 
     # --- Model access ---
 
@@ -294,6 +305,27 @@ class Agent:
             len(registered), name, registered,
         )
         return registered
+
+    # ------------------------------------------------------------------
+    # Workspace
+    # ------------------------------------------------------------------
+
+    def workspace(
+        self,
+        session_id: str,
+        *,
+        cleanup_on_exit: bool = False,
+    ) -> Any:
+        """Open the per-session workspace as an async context manager.
+
+        Usage::
+
+            async with agent.workspace(session_id="sid") as ws:
+                await ws.write("report.pdf", pdf_bytes)
+        """
+        return use_workspace(
+            self.workspace_backend, session_id, cleanup_on_exit=cleanup_on_exit,
+        )
 
     # ------------------------------------------------------------------
     # Skill registration

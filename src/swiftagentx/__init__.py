@@ -34,6 +34,7 @@ from .core.memory_layers import (
     MemoryBackend,
     MemorySnapshot,
 )
+from .core.prompt_layout import PromptLayout
 from .core.skills import Skill, SkillRegistry, parse_skill_markdown
 from .core.subagent import (
     SubAgentInvocation,
@@ -41,6 +42,13 @@ from .core.subagent import (
     SubAgentRequest,
     SubAgentResult,
     SubAgentRole,
+)
+from .core.workspace import (
+    InMemoryWorkspaceBackend,
+    LocalDiskWorkspaceBackend,
+    Workspace,
+    WorkspaceBackend,
+    use_workspace,
 )
 from .providers.mcp import MCPClient, MCPClientError, MCPServerSpec, MCPTool
 from .core.model_client import DummyModelClient, ModelClient, ModelClientFactory, ModelResponse
@@ -86,6 +94,12 @@ __all__ = [
     "SubAgentManager", "SubAgentInvocation",
     # v0.3 skills
     "Skill", "SkillRegistry", "parse_skill_markdown",
+    # v0.3 workspace
+    "Workspace", "WorkspaceBackend",
+    "InMemoryWorkspaceBackend", "LocalDiskWorkspaceBackend",
+    "use_workspace",
+    # v0.3 prompt layout
+    "PromptLayout",
     "CacheManager",
     "PromptManager", "PromptTemplate",
     "IntentLevel", "IntentResult", "IntentRouter",
