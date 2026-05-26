@@ -9,32 +9,32 @@ Features:
 - Production-ready (middleware, tracing, exponential backoff)
 """
 
+from .admin.service import AdminService
 from .core.agent import Agent
-from .core.model_client import ModelClient, ModelResponse, DummyModelClient, ModelClientFactory
-from .core.memory import Message, SessionMemory
 from .core.cache import CacheManager
+from .core.memory import Message, SessionMemory
+from .core.model_client import DummyModelClient, ModelClient, ModelClientFactory, ModelResponse
+from .core.pipeline import PipelineStage, RequestPipeline, StageResult
 from .core.prompt import PromptManager, PromptTemplate
 from .core.router import IntentLevel, IntentResult, IntentRouter
-from .core.pipeline import PipelineStage, StageResult, RequestPipeline
-from .tools.base import Tool, ToolOutput, ToolOutputType, AgentContext
-from .tools.registry import ToolRegistry
-from .tools.executor import ToolExecutor
-from .tools.scenario import ScenarioConfig, ToolChainStep, ScenarioEngine
-from .stream.adapter import SSEStreamAdapter
-from .stream.builder import SSEEventBuilder
-from .models.schema import AgentRequest, AgentResponse, SessionContext
-from .models.config import SwiftAgentConfig, ModelTier
+from .knowledge_base.base import KnowledgeBase
+from .knowledge_base.document import Document, SearchResult
+from .knowledge_base.memory import MemoryKnowledgeBase
+from .knowledge_base.stage import KnowledgeBaseStage
+from .knowledge_base.tool import KnowledgeBaseTool
 from .middleware.base import Middleware, MiddlewareChain
+from .models.config import ModelTier, SwiftAgentConfig
+from .models.schema import AgentRequest, AgentResponse, SessionContext
 from .storage.base import StorageBackend
 from .storage.memory import MemoryStorage
-from .knowledge_base.document import Document, SearchResult
-from .knowledge_base.base import KnowledgeBase
-from .knowledge_base.memory import MemoryKnowledgeBase
-from .knowledge_base.tool import KnowledgeBaseTool
-from .knowledge_base.stage import KnowledgeBaseStage
-from .admin.service import AdminService
+from .stream.adapter import SSEStreamAdapter
+from .stream.builder import SSEEventBuilder
+from .tools.base import AgentContext, Tool, ToolOutput, ToolOutputType
+from .tools.executor import ToolExecutor
+from .tools.registry import ToolRegistry
+from .tools.scenario import ScenarioConfig, ScenarioEngine, ToolChainStep
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     # Core

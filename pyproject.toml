@@ -4,25 +4,31 @@ build-backend = "hatchling.build"
 
 [project]
 name = "swiftagentx"
-version = "0.1.1"
-description = "Enterprise-grade fast-response Agent framework with dual-model strategy, scenario toolchains, and SSE streaming"
+version = "0.2.0"
+description = "Production-grade Agent framework with sub-second latency via tiered execution: three-level cache, dual-model routing, and scenario toolchains."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [
-    { name = "SwiftAgent Team" },
+    { name = "Caxson", email = "caelumsilas0@gmail.com" },
 ]
-keywords = ["agent", "llm", "react", "sse", "streaming", "toolchain"]
+keywords = [
+    "agent", "llm", "react", "sse", "streaming", "toolchain",
+    "ai-agent", "agent-framework", "openai", "rag", "low-latency",
+    "production-ready", "scenario-routing", "knowledge-base",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Operating System :: OS Independent",
+    "Framework :: AsyncIO",
 ]
 dependencies = [
     "pydantic>=2.0.0",
@@ -39,31 +45,42 @@ all = ["swiftagentx[openai,dashscope,flask,fastapi,mysql]"]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
+    "types-PyYAML",
+]
+benchmark = [
+    "matplotlib>=3.7.0",
+    "tabulate>=0.9.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/swiftagent/swiftagent"
-Documentation = "https://swiftagent.readthedocs.io"
-Repository = "https://github.com/swiftagent/swiftagent"
+Homepage = "https://github.com/Caxson/swiftagentx"
+Documentation = "https://github.com/Caxson/swiftagentx/tree/main/docs"
+Repository = "https://github.com/Caxson/swiftagentx"
+Issues = "https://github.com/Caxson/swiftagentx/issues"
+Changelog = "https://github.com/Caxson/swiftagentx/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swiftagentx"]
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+select = ["E", "F", "I", "W", "B", "UP"]
+ignore = ["E501"]  # line-too-long handled by formatter
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 strict = false
 warn_return_any = true
 warn_unused_configs = true
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "-q"

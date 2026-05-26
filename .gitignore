@@ -78,6 +78,11 @@ celerybeat-schedule
 venv/
 ENV/
 
+# Benchmark artifacts (generated locally / by CI; uploaded as artifacts, not committed)
+benchmark_results.json
+benchmark_*.png
+benchmark_latency.png
+
 # Spyder project settings
 .spyderproject
 .spyproject
