@@ -13,6 +13,14 @@ from .admin.service import AdminService
 from .core.agent import Agent
 from .core.cache import CacheManager
 from .core.memory import Message, SessionMemory
+from .core.memory_layers import (
+    DialogTurn,
+    InMemoryBackend,
+    LayeredMemory,
+    LayeredMemoryConfig,
+    MemoryBackend,
+    MemorySnapshot,
+)
 from .core.model_client import DummyModelClient, ModelClient, ModelClientFactory, ModelResponse
 from .core.pipeline import PipelineStage, RequestPipeline, StageResult
 from .core.prompt import PromptManager, PromptTemplate
@@ -41,6 +49,10 @@ __all__ = [
     "Agent",
     "ModelClient", "ModelResponse", "DummyModelClient", "ModelClientFactory",
     "Message", "SessionMemory",
+    # v0.3 layered memory
+    "DialogTurn", "MemorySnapshot",
+    "MemoryBackend", "InMemoryBackend",
+    "LayeredMemoryConfig", "LayeredMemory",
     "CacheManager",
     "PromptManager", "PromptTemplate",
     "IntentLevel", "IntentResult", "IntentRouter",
