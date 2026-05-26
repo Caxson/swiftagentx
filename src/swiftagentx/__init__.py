@@ -34,6 +34,13 @@ from .core.memory_layers import (
     MemoryBackend,
     MemorySnapshot,
 )
+from .core.subagent import (
+    SubAgentInvocation,
+    SubAgentManager,
+    SubAgentRequest,
+    SubAgentResult,
+    SubAgentRole,
+)
 from .providers.mcp import MCPClient, MCPClientError, MCPServerSpec, MCPTool
 from .core.model_client import DummyModelClient, ModelClient, ModelClientFactory, ModelResponse
 from .core.pipeline import PipelineStage, RequestPipeline, StageResult
@@ -73,6 +80,9 @@ __all__ = [
     "TopicChangeHook",
     # v0.3 MCP
     "MCPClient", "MCPClientError", "MCPServerSpec", "MCPTool",
+    # v0.3 sub-agents
+    "SubAgentRole", "SubAgentRequest", "SubAgentResult",
+    "SubAgentManager", "SubAgentInvocation",
     "CacheManager",
     "PromptManager", "PromptTemplate",
     "IntentLevel", "IntentResult", "IntentRouter",

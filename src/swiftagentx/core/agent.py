@@ -47,6 +47,13 @@ from .parameter import ParameterManager
 from .pipeline import RequestPipeline
 from .prompt import PromptManager
 from .router import IntentLevel, IntentResult, IntentRouter
+from .subagent import (
+    SubAgentHandler,
+    SubAgentManager,
+    SubAgentRequest,
+    SubAgentResult,
+    SubAgentRole,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +136,9 @@ class Agent:
         # MCP clients spun up via register_mcp_server() (kept alive here so
         # they aren't GC'd until shutdown_mcp_servers()).
         self._mcp_clients: dict[str, list[Any]] = {}
+
+        # Sub-agent role registry.
+        self.subagents = SubAgentManager()
 
     # --- Model access ---
 
@@ -280,6 +290,31 @@ class Agent:
             len(registered), name, registered,
         )
         return registered
+
+    # ------------------------------------------------------------------
+    # Sub-agent dispatch
+    # ------------------------------------------------------------------
+
+    def register_subagent(
+        self, role: SubAgentRole, handler: SubAgentHandler | None = None,
+    ) -> None:
+        """Register a sub-agent role for use with :meth:`dispatch_subagents`."""
+        self.subagents.register_role(role, handler)
+
+    async def dispatch_subagents(
+        self,
+        requests: list[SubAgentRequest],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[SubAgentResult]:
+        """
+        Run sub-agents in parallel. One :class:`SubAgentResult` per request,
+        in the same order. Failed sub-agents return ``success=False``;
+        they do not raise.
+        """
+        return await self.subagents.dispatch(
+            self, requests, timeout_seconds=timeout_seconds,
+        )
 
     async def shutdown_mcp_servers(self) -> None:
         """Close every MCP client the agent has spun up."""
