@@ -47,6 +47,7 @@ from .parameter import ParameterManager
 from .pipeline import RequestPipeline
 from .prompt import PromptManager
 from .router import IntentLevel, IntentResult, IntentRouter
+from .skills import Skill, SkillRegistry, parse_skill_markdown
 from .subagent import (
     SubAgentHandler,
     SubAgentManager,
@@ -139,6 +140,9 @@ class Agent:
 
         # Sub-agent role registry.
         self.subagents = SubAgentManager()
+
+        # Skill registry — markdown-defined workflows the ReAct loop can invoke.
+        self.skills = SkillRegistry()
 
     # --- Model access ---
 
@@ -290,6 +294,60 @@ class Agent:
             len(registered), name, registered,
         )
         return registered
+
+    # ------------------------------------------------------------------
+    # Skill registration
+    # ------------------------------------------------------------------
+
+    def register_skill(self, skill: Skill) -> None:
+        """Register a markdown-defined skill for ReAct invocation."""
+        self.skills.register(skill)
+
+    def load_skills(self, directory: str | Any) -> list[str]:
+        """Load every ``*.md`` skill under ``directory`` (recursive).
+
+        Returns the names of the skills successfully registered.
+        """
+        return self.skills.load_dir(directory)
+
+    async def invoke_skill(
+        self,
+        name: str,
+        *,
+        args: dict[str, Any] | None = None,
+        context_input: str = "",
+    ) -> str:
+        """
+        Run a skill: render its body into a prompt and let the HEAVY (or
+        configured-tier) model execute the instructions in one shot.
+
+        Returns the model's textual response. Caller decides what to do
+        with it (a ReAct iteration treats it as an observation).
+        """
+        skill = self.skills.get(name)
+        if skill is None:
+            return f"[skill {name!r} not found]"
+
+        tier = ModelTier.HEAVY if skill.model_tier == "heavy" else ModelTier.LIGHT
+        model = self.get_model(tier)
+
+        rendered_args = ""
+        if args:
+            rendered_args = "\n".join(f"- {k}: {v}" for k, v in args.items())
+            rendered_args = f"\n\nInputs:\n{rendered_args}"
+
+        prompt = (
+            f"{skill.to_prompt_block()}\n\n"
+            f"Context: {context_input}{rendered_args}\n\n"
+            "Execute the skill above step by step and produce the final result."
+        )
+
+        response = await model.chat(
+            [{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=800,
+        )
+        return response.content
 
     # ------------------------------------------------------------------
     # Sub-agent dispatch

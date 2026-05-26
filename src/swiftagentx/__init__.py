@@ -34,6 +34,7 @@ from .core.memory_layers import (
     MemoryBackend,
     MemorySnapshot,
 )
+from .core.skills import Skill, SkillRegistry, parse_skill_markdown
 from .core.subagent import (
     SubAgentInvocation,
     SubAgentManager,
@@ -83,6 +84,8 @@ __all__ = [
     # v0.3 sub-agents
     "SubAgentRole", "SubAgentRequest", "SubAgentResult",
     "SubAgentManager", "SubAgentInvocation",
+    # v0.3 skills
+    "Skill", "SkillRegistry", "parse_skill_markdown",
     "CacheManager",
     "PromptManager", "PromptTemplate",
     "IntentLevel", "IntentResult", "IntentRouter",
