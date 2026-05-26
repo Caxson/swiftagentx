@@ -10,34 +10,36 @@ Provides:
 - Middleware support
 """
 
-import asyncio
+import logging
 import re
 import time
 import uuid
-import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
-from ..models.schema import (
-    AgentRequest, AgentResponse, SessionContext, ContextParameters,
-)
-from ..models.config import SwiftAgentConfig, ModelTier
-from .memory import SessionMemory
-from .model_client import ModelClient, ModelResponse, DummyModelClient
-from .cache import CacheManager
-from .prompt import PromptManager
-from .parameter import ParameterManager
-from .router import IntentLevel, IntentResult, IntentRouter
-from .pipeline import RequestPipeline, StageResult
-from ..tools.base import Tool, ToolOutput, ToolOutputType
-from ..tools.registry import ToolRegistry
-from ..tools.executor import ToolExecutor
-from ..tools.termination import TerminationChecker
-from ..tools.scenario import ScenarioConfig, ScenarioEngine
-from ..stream.adapter import SSEStreamAdapter
-from ..stream.builder import SSEEventBuilder
-from ..middleware.base import Middleware, MiddlewareChain
 from ..knowledge_base.base import KnowledgeBase
 from ..knowledge_base.tool import KnowledgeBaseTool
+from ..middleware.base import Middleware, MiddlewareChain
+from ..models.config import ModelTier, SwiftAgentConfig
+from ..models.schema import (
+    AgentRequest,
+    AgentResponse,
+    ContextParameters,
+    SessionContext,
+)
+from ..stream.adapter import SSEStreamAdapter
+from ..stream.builder import SSEEventBuilder
+from ..tools.base import Tool, ToolOutput, ToolOutputType
+from ..tools.executor import ToolExecutor
+from ..tools.registry import ToolRegistry
+from ..tools.scenario import ScenarioConfig, ScenarioEngine
+from ..tools.termination import TerminationChecker
+from .cache import CacheManager
+from .memory import SessionMemory
+from .model_client import ModelClient
+from .parameter import ParameterManager
+from .pipeline import RequestPipeline
+from .prompt import PromptManager
+from .router import IntentLevel, IntentResult, IntentRouter
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +60,16 @@ class Agent:
     def __init__(
         self,
         name: str = "SwiftAgent",
-        models: Optional[Dict[ModelTier, ModelClient]] = None,
-        model: Optional[ModelClient] = None,
+        models: dict[ModelTier, ModelClient] | None = None,
+        model: ModelClient | None = None,
         max_iterations: int = 10,
-        config: Optional[SwiftAgentConfig] = None,
+        config: SwiftAgentConfig | None = None,
     ):
         self.name = name
         self.config = config or SwiftAgentConfig(name=name, max_iterations=max_iterations)
 
         # Model setup
-        self._models: Dict[ModelTier, ModelClient] = models or {}
+        self._models: dict[ModelTier, ModelClient] = models or {}
         if model is not None:
             if ModelTier.HEAVY not in self._models:
                 self._models[ModelTier.HEAVY] = model
@@ -87,7 +89,7 @@ class Agent:
         self.termination_checker = TerminationChecker()
 
         # Knowledge base
-        self._knowledge_base: Optional[KnowledgeBase] = None
+        self._knowledge_base: KnowledgeBase | None = None
 
         # Middleware
         self._middleware_chain = MiddlewareChain()
@@ -115,22 +117,56 @@ class Agent:
 
     # --- Public API ---
 
-    def set_knowledge_base(self, kb: KnowledgeBase) -> None:
+    def set_knowledge_base(
+        self,
+        kb: KnowledgeBase,
+        *,
+        auto_short_circuit: bool = True,
+        short_circuit_threshold: float | None = None,
+    ) -> None:
         """
         Attach a knowledge base to this agent.
 
-        Automatically registers a KnowledgeBaseTool so the agent
-        can query the KB during ReAct loops.
+        Side effects (in order):
+
+        1. Registers a ``KnowledgeBaseTool`` so the agent can query the KB
+           during ReAct loops.
+        2. If ``auto_short_circuit`` is True (the default), prepends a
+           ``KnowledgeBaseStage`` to the request pipeline so that high-confidence
+           exact matches short-circuit the agent and return immediately, with
+           zero LLM calls. Pass ``auto_short_circuit=False`` to opt out.
+
+        Args:
+            kb: KnowledgeBase implementation to attach.
+            auto_short_circuit: Auto-add a ``KnowledgeBaseStage`` to the
+                pipeline for sub-second responses on exact matches.
+            short_circuit_threshold: Score threshold for the auto-added
+                stage. Defaults to ``config.kb_exact_match_threshold``.
         """
+        from ..knowledge_base.stage import KnowledgeBaseStage
+
         self._knowledge_base = kb
         kb_tool = KnowledgeBaseTool(
             kb=kb,
             exact_match_threshold=self.config.kb_exact_match_threshold,
         )
+        # Idempotent: if a KB tool is already registered, replace it.
+        self.tool_registry.unregister(kb_tool.name)
         self.tool_registry.register(kb_tool)
 
+        if auto_short_circuit:
+            threshold = (
+                short_circuit_threshold
+                if short_circuit_threshold is not None
+                else self.config.kb_exact_match_threshold
+            )
+            # Remove any previously-added auto stage so set_knowledge_base
+            # is idempotent.
+            self.pipeline.remove_stage("KnowledgeBaseStage")
+            self.pipeline.insert_stage(0, KnowledgeBaseStage(kb=kb, threshold=threshold))
+
     @property
-    def knowledge_base(self) -> Optional[KnowledgeBase]:
+    def knowledge_base(self) -> KnowledgeBase | None:
         return self._knowledge_base
 
     def register_tool(self, tool: Tool) -> None:
@@ -187,6 +223,42 @@ class Agent:
 
             # Add user message to memory
             self.memory.add_message("user", user_input)
+
+            # Run request pipeline (KB short-circuit, security checks, etc.).
+            # A stage that returns SHORT_CIRCUIT bypasses the rest of run().
+            if self.pipeline.stages:
+                pipeline_ctx: dict[str, Any] = {
+                    "user_input": user_input,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    **context_vars,
+                }
+                from .pipeline import StageAction
+                stage_result = await self.pipeline.execute(pipeline_ctx)
+                if stage_result.action == StageAction.SHORT_CIRCUIT and stage_result.answer is not None:
+                    answer = stage_result.answer
+                    self.memory.add_message("assistant", answer)
+                    return AgentResponse(
+                        session_id=session_id,
+                        request_id=request_id,
+                        answer=answer,
+                        total_iterations=0,
+                        execution_time_ms=(time.time() - start_time) * 1000,
+                        metadata={
+                            "pipeline_short_circuit": True,
+                            **stage_result.metadata,
+                        },
+                    )
+                if stage_result.action == StageAction.ABORT:
+                    answer = stage_result.answer or "Request aborted by pipeline."
+                    return AgentResponse(
+                        session_id=session_id,
+                        request_id=request_id,
+                        answer=answer,
+                        total_iterations=0,
+                        execution_time_ms=(time.time() - start_time) * 1000,
+                        metadata={"pipeline_abort": True, **stage_result.metadata},
+                    )
 
             # Cache check
             if self.config.enable_cache:
@@ -361,7 +433,7 @@ class Agent:
         """Called after intent classification."""
         pass
 
-    async def on_before_tool_call(self, context: SessionContext, tool_name: str, params: Dict[str, Any]) -> None:
+    async def on_before_tool_call(self, context: SessionContext, tool_name: str, params: dict[str, Any]) -> None:
         """Called before each tool call."""
         pass
 
@@ -389,7 +461,7 @@ class Agent:
         return await self.router.classify(user_input, model=model)
 
     async def _react_loop(
-        self, context: SessionContext, adapter: Optional[SSEStreamAdapter] = None
+        self, context: SessionContext, adapter: SSEStreamAdapter | None = None
     ) -> str:
         """Execute the ReAct reasoning loop."""
         model = self.get_model(ModelTier.HEAVY)
@@ -477,7 +549,7 @@ class Agent:
         response = await model.chat([{"role": "user", "content": prompt}])
         return response.content
 
-    def _parse_action(self, thought: str) -> Tuple[str, Dict[str, Any]]:
+    def _parse_action(self, thought: str) -> tuple[str, dict[str, Any]]:
         """Parse tool name and parameters from a thought."""
         import json as json_mod
 
@@ -490,7 +562,7 @@ class Agent:
 
         # Match "Action Input: {...}"
         input_match = re.search(r"Action Input:\s*(\{.*?\})", thought, re.DOTALL)
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if input_match:
             try:
                 params = json_mod.loads(input_match.group(1))
@@ -547,7 +619,7 @@ class Agent:
             return f"Sorry, I couldn't complete this request: {result.error}"
 
     async def _direct_response(
-        self, context: SessionContext, adapter: Optional[SSEStreamAdapter] = None
+        self, context: SessionContext, adapter: SSEStreamAdapter | None = None
     ) -> str:
         """Generate a direct LLM response (no tools needed)."""
         model = self.get_model(ModelTier.HEAVY)

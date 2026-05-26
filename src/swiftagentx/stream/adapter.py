@@ -3,8 +3,9 @@ SSE stream adapter — manages event queue and generators for Server-Sent Events
 """
 
 import asyncio
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 from datetime import datetime
+
 from ..models.schema import StreamEvent, StreamEventType
 
 
@@ -59,11 +60,14 @@ class SSEStreamAdapter:
             yield error_event.to_sse_message()
 
     async def event_generator_with_timeout(self, timeout_seconds: int = 120) -> AsyncGenerator[str, None]:
-        """Event generator with overall timeout."""
+        """Event generator with overall timeout. Compatible with Python 3.10+."""
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout_seconds
         try:
-            async with asyncio.timeout(timeout_seconds):
-                async for message in self.event_generator():
-                    yield message
+            async for message in self.event_generator():
+                if loop.time() > deadline:
+                    raise asyncio.TimeoutError()
+                yield message
         except asyncio.TimeoutError:
             error_event = StreamEvent(
                 event_type=StreamEventType.ERROR,

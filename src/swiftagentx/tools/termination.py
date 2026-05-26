@@ -2,8 +2,12 @@
 Termination checker — determines when the ReAct loop should end.
 """
 
-from typing import Any, Callable, List, Optional, Tuple
+import logging
+from collections.abc import Callable
+
 from ..models.schema import SessionContext
+
+logger = logging.getLogger(__name__)
 
 
 class TerminationChecker:
@@ -12,7 +16,7 @@ class TerminationChecker:
     """
 
     def __init__(self) -> None:
-        self.custom_checkers: List[Callable[[SessionContext], bool]] = []
+        self.custom_checkers: list[Callable[[SessionContext], bool]] = []
 
     def check_max_iterations(self, context: SessionContext) -> bool:
         return context.current_iteration >= context.max_iterations
@@ -42,13 +46,13 @@ class TerminationChecker:
     def should_terminate(
         self,
         context: SessionContext,
-        last_thought: Optional[str] = None,
+        last_thought: str | None = None,
         check_max_iterations: bool = True,
         check_final_answer: bool = True,
         check_no_action: bool = False,
         check_repeated_actions: bool = False,
         check_error_state: bool = True,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         if check_max_iterations and self.check_max_iterations(context):
             return True, f"Reached max iterations: {context.max_iterations}"
 
@@ -68,8 +72,13 @@ class TerminationChecker:
             try:
                 if checker(context):
                     return True, f"Custom checker triggered: {checker.__name__}"
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Custom termination checker %s raised %s: %s",
+                    getattr(checker, "__name__", "<anonymous>"),
+                    type(exc).__name__,
+                    exc,
+                )
 
         return False, "No termination condition met"
 
