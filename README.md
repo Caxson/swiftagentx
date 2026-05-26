@@ -49,18 +49,29 @@ production.
 
 ## Tiered execution
 
-Scenarios sit in the middle of a four-tier execution model:
+Scenarios sit in the middle of a four-tier execution model. **All numbers
+below are measured against DashScope Qwen — 30 iterations per scenario,
+LIGHT=`qwen-flash`, HEAVY=`qwen-turbo`. Reproducible from this repo with
+one command** (see [`benchmarks/`](benchmarks/)).
 
-| Request type | Path | Latency (mock LLM) | LLM calls |
-|---|---|---|---|
-| KB exact match / cache hit | Pipeline short-circuit | **~0 ms** | **0** |
-| **Known intent (Scenario)** | **Pre-compiled tool chain** | **~200 ms** | **1** (LIGHT classify) |
-| Open conversation | Direct LLM | ~1.5 s | 2 (LIGHT + HEAVY) |
-| Multi-step reasoning | Full ReAct loop | 4-10 s | 3-7 |
+![SwiftAgentX benchmark — latency and LLM calls per execution tier, DashScope Qwen, 30 iterations per scenario](docs/assets/v0.3-benchmark-qwen.png)
+
+| Request type | Path | P50 latency | P95 | LLM calls |
+|---|---|---:|---:|---:|
+| KB exact match / cache hit | Pipeline short-circuit | **0 ms** | 0 ms | **0** |
+| **Known intent (Scenario)** | **Pre-compiled tool chain** | **517 ms** | 802 ms | **1** (LIGHT only) |
+| Open conversation | Direct LLM | 1.4 s | 2.4 s | 2 (LIGHT + HEAVY) |
+| Multi-step reasoning | Full ReAct loop | 3.1 s | 4.0 s | 3 |
 
 A LIGHT model picks the path. A HEAVY model only runs when the request
-genuinely needs open-ended reasoning. Measured numbers and reproducible
-benchmarks live in [`benchmarks/`](benchmarks/).
+genuinely needs open-ended reasoning. The two cheap tiers (cache + scenario)
+together cover the predictable bulk of production traffic at **0–1 LLM
+calls per request** — that's the headline. Reproduce the numbers with:
+
+```bash
+export DASHSCOPE_API_KEY=sk-...
+python benchmarks/real_runner.py --iterations 30
+```
 
 ### What goes inside a Scenario
 
@@ -88,7 +99,7 @@ cheap, but each step can reach into the full agent toolkit when needed.
 | Pipeline stage short-circuit (KB / security / feature flags) | ✅ | DIY | ❌ | ❌ |
 | Streaming with fine-grained event types | ✅ 12 types | ✅ | partial | ✅ |
 | Framework-agnostic core (no HTTP in `core/`) | ✅ | n/a | n/a | n/a |
-| Test suite size | 105 tests, **< 0.1 s** | huge | huge | medium |
+| Test suite size | 195 tests, **< 0.5 s** | huge | huge | medium |
 
 LangChain is broader. SwiftAgentX is sharper for the predictable-traffic
 production patterns where latency and per-request LLM cost actually move
@@ -560,17 +571,27 @@ LangChain / AutoGen / CrewAI 的地方。
 
 ## 分层执行
 
-Scenario 位于四层执行模型的中央：
+Scenario 位于四层执行模型的中央。**所有数据用 DashScope Qwen 实测——
+每个场景 30 次迭代，LIGHT=`qwen-flash`，HEAVY=`qwen-turbo`，一行命令
+就能在你自己机器上复现**（见 [`benchmarks/`](benchmarks/)）。
 
-| 请求类型 | 执行路径 | 延迟（mock LLM 实测） | LLM 调用次数 |
-|---|---|---|---|
-| 缓存命中 / KB 精准匹配 | Pipeline 短路 | **~0 ms** | **0** |
-| **已知意图（Scenario）** | **预编译工具链** | **~180 ms** | **1**（仅 LIGHT 分类） |
-| 开放式对话 | 直接 LLM 回复 | ~1.5 s | 2（LIGHT + HEAVY） |
-| 多步推理 | 完整 ReAct 循环 | 4-10 s | 3-7 |
+![SwiftAgentX benchmark — DashScope Qwen 实测 30 次迭代，按执行路径分层](docs/assets/v0.3-benchmark-qwen.png)
+
+| 请求类型 | 执行路径 | P50 延迟 | P95 | LLM 调用次数 |
+|---|---|---:|---:|---:|
+| 缓存命中 / KB 精准匹配 | Pipeline 短路 | **0 ms** | 0 ms | **0** |
+| **已知意图（Scenario）** | **预编译工具链** | **517 ms** | 802 ms | **1**（仅 LIGHT） |
+| 开放式对话 | 直接 LLM 回复 | 1.4 s | 2.4 s | 2（LIGHT + HEAVY） |
+| 多步推理 | 完整 ReAct 循环 | 3.1 s | 4.0 s | 3 |
 
 LIGHT 模型挑路径。HEAVY 模型只在请求确实需要开放式推理时才启动。
-真实可复现的 benchmark 数据见 [`benchmarks/`](benchmarks/)。
+两条便宜的路径（缓存 + Scenario）合起来覆盖生产环境绝大多数可预测的流量，
+**每个请求 0-1 次 LLM 调用**——这就是头号卖点。一行命令复现：
+
+```bash
+export DASHSCOPE_API_KEY=sk-...
+python benchmarks/real_runner.py --iterations 30
+```
 
 ### Scenario 里能装什么
 
@@ -597,7 +618,7 @@ Scenario 不只是一个静态工具列表。链中的步骤可以是：
 | Pipeline 阶段短路（KB / 安全 / 功能开关） | ✅ | 自己写 | ❌ | ❌ |
 | 流式细粒度事件类型 | ✅ 12 种 | ✅ | 部分 | ✅ |
 | 框架无关核心（`core/` 不依赖 HTTP） | ✅ | n/a | n/a | n/a |
-| 测试套件 | 111 个测试，**< 0.1 秒** | 庞大 | 庞大 | 中等 |
+| 测试套件 | 195 个测试，**< 0.5 秒** | 庞大 | 庞大 | 中等 |
 
 LangChain 更广。SwiftAgentX 更专——专于流量可预测、延迟和单次
 LLM 成本是命门的生产场景。
