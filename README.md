@@ -1,6 +1,13 @@
-# SwiftAgent
+# SwiftAgentX
 
-**Enterprise-grade fast-response Agent framework.**
+**A production Agent framework built around *Scenarios* — pre-compiled
+execution paths that skip the ReAct loop entirely on known intents.**
+
+[![PyPI version](https://img.shields.io/pypi/v/swiftagentx.svg)](https://pypi.org/project/swiftagentx/)
+[![Python](https://img.shields.io/pypi/pyversions/swiftagentx.svg)](https://pypi.org/project/swiftagentx/)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![CI](https://github.com/Caxson/swiftagentx/actions/workflows/ci.yml/badge.svg)](https://github.com/Caxson/swiftagentx/actions/workflows/ci.yml)
+[![PyPI downloads](https://img.shields.io/pypi/dm/swiftagentx)](https://pypi.org/project/swiftagentx/)
 
 [English](#english) | [中文](#中文)
 
@@ -8,29 +15,148 @@
 
 <a id="english"></a>
 
-## Why SwiftAgent?
+## The core idea: Scenarios
 
-Most Agent frameworks treat every request the same — route it into a ReAct loop, make 3-5 LLM calls, and hope for the best. That works for demos, but in production you need **sub-second responses** for common patterns and **deep reasoning** only when it matters.
+Other frameworks treat every request as an open-ended reasoning problem.
+SwiftAgentX disagrees. In production, **80% of traffic is predictable**:
+"check my order status", "what's your return policy", "book a slot at 3pm".
+For these, a ReAct loop is overkill — three to five LLM calls, several
+seconds of latency, a token bill that nobody can explain.
 
-SwiftAgent solves this with a **tiered execution strategy**:
+A **Scenario** is a *pre-compiled execution path*:
 
-| Request Type | Path | Latency | LLM Calls |
+```python
+agent.register_scenario("order_status", ScenarioConfig(
+    name="Order Status",
+    triggers=["order", "where is my", "shipment"],
+    tool_chain=[
+        ToolChainStep(tool="order_db", query_template="$order_id"),
+        ToolChainStep(tool="courier_api", condition="status=in_transit"),
+    ],
+    cache_ttl=120,
+    output_type="direct",   # no second LLM call to "format" the answer
+))
+```
+
+When the LIGHT model classifies a request as a `weather` / `order_status` /
+`balance_check` scenario, SwiftAgentX **executes the chain directly** —
+no ReAct loop, no second LLM call. One classification step (LIGHT model,
+~200 ms), one tool chain, done.
+
+This is the framework's biggest design bet, and the place it pulls ahead of
+LangChain / AutoGen / CrewAI by a margin that actually matters in
+production.
+
+## Tiered execution
+
+Scenarios sit in the middle of a four-tier execution model:
+
+| Request type | Path | Latency (mock LLM) | LLM calls |
 |---|---|---|---|
-| Cached / KB match | Three-level cache | ~0ms | 0 |
-| High-frequency scenario | Scenario toolchain | ~200ms | 1 (classification only) |
-| Complex reasoning | Full ReAct loop | 2-10s | 3-10 |
-| Simple conversation | Direct LLM response | ~500ms | 1 |
+| KB exact match / cache hit | Pipeline short-circuit | **~0 ms** | **0** |
+| **Known intent (Scenario)** | **Pre-compiled tool chain** | **~200 ms** | **1** (LIGHT classify) |
+| Open conversation | Direct LLM | ~1.5 s | 2 (LIGHT + HEAVY) |
+| Multi-step reasoning | Full ReAct loop | 4-10 s | 3-7 |
+
+A LIGHT model picks the path. A HEAVY model only runs when the request
+genuinely needs open-ended reasoning. Measured numbers and reproducible
+benchmarks live in [`benchmarks/`](benchmarks/).
+
+### What goes inside a Scenario
+
+A Scenario is not just a static tool list. Steps in a chain can be:
+
+- A native Python `Tool`
+- (v0.3+) An **MCP** tool — any
+  [Model Context Protocol](https://modelcontextprotocol.io) server's exposed
+  tools, no Python wrapper required
+- (v0.3+) A **hook** — a conditional handler that branches into an LLM
+  call, a sub-agent dispatch, or external shell logic when the chain hits
+  a particular state
+
+This is how Scenarios stay fast *and* extensible: the routing decision is
+cheap, but each step can reach into the full agent toolkit when needed.
+
+### vs. LangChain / AutoGen / CrewAI
+
+|  | SwiftAgentX | LangChain | AutoGen | CrewAI |
+|---|:---:|:---:|:---:|:---:|
+| **Pre-compiled Scenario shortcut** | **✅ core differentiator** | ❌ no equivalent | ❌ no equivalent | ❌ no equivalent |
+| FAQ / cache-hit returns with 0 LLM calls | ✅ | 1-3 LLM calls | 2+ LLM calls | 2+ LLM calls |
+| Built-in three-level cache (KB / tool / session) | ✅ | partial | ❌ | ❌ |
+| Dual-model routing (LIGHT/HEAVY) baked in | ✅ | DIY | DIY | DIY |
+| Pipeline stage short-circuit (KB / security / feature flags) | ✅ | DIY | ❌ | ❌ |
+| Streaming with fine-grained event types | ✅ 12 types | ✅ | partial | ✅ |
+| Framework-agnostic core (no HTTP in `core/`) | ✅ | n/a | n/a | n/a |
+| Test suite size | 105 tests, **< 0.1 s** | huge | huge | medium |
+
+LangChain is broader. SwiftAgentX is sharper for the predictable-traffic
+production patterns where latency and per-request LLM cost actually move
+the needle.
+
+## Who is this for
+
+- You ship an Agent product where **most requests are predictable** (customer
+  service, order ops, FAQ, internal copilots, AI outbound) and only a small
+  tail needs real open-ended reasoning.
+- You care about **P95 latency and per-request LLM cost** as first-class
+  metrics, not afterthoughts.
+- You want a framework you can **read in one afternoon** (4k lines of source)
+  and modify without fear.
+- You're comfortable wiring tools, KBs, and scenarios in Python instead of
+  YAML/DSL.
+
+If you want a kitchen-sink toolkit with every integration imaginable, use
+LangChain. If you want a small, fast, opinionated core where Scenarios are
+the unit of design, read on.
 
 ## Features
 
-- **Dual-Model Strategy** — Light model for intent classification (~200ms), heavy model for ReAct reasoning. Classify fast, reason deep.
-- **Scenario Toolchains** — Pre-defined tool chains for high-frequency patterns, skipping the full ReAct loop. Save 2-3 LLM calls per request.
-- **Three-Level Cache** — KB exact match / tool result (per-user) / session variable. Near-zero latency on hot paths.
-- **Knowledge Base** — Pluggable KB abstraction with built-in TF-IDF memory implementation. Pipeline stage for exact-match short-circuit. Custom backends (Weaviate, Elasticsearch, etc.) via simple ABC.
-- **Admin API** — Framework-agnostic admin service with Flask Blueprint and FastAPI Router. Status, tools, cache, config, and KB management endpoints out of the box.
-- **SSE Streaming** — Fine-grained event system (thought / action / observation / answer) with heartbeat keepalive.
-- **Production Ready** — Middleware pipeline, request tracing, exponential backoff retry, input validation, error sanitization.
-- **Framework Agnostic** — Built-in adapters for Flask and FastAPI. Core has zero HTTP dependencies.
+- **Scenarios** — Pre-compiled execution paths that skip the ReAct loop on
+  known intents. The framework's headline abstraction. Each step in a
+  scenario chain can be a Python tool, an MCP tool, or a conditional hook.
+- **Tiered execution** — Pipeline short-circuit → Scenario → ReAct → Direct,
+  picked per request by a LIGHT classifier.
+- **Dual-model routing** — `ModelTier.LIGHT` for intent classification,
+  `ModelTier.HEAVY` for reasoning. ~30× cost spread on real providers.
+- **Three-level cache** — KB exact match (global), tool result (per-user),
+  session variables. Independent TTLs, periodic cleanup.
+- **Pipeline stages** — Insert KB short-circuit, security checks, feature
+  flags, or any custom logic before the cache/route step. Stages can
+  CONTINUE, SHORT_CIRCUIT, or ABORT.
+- **Knowledge base ABC** — Built-in TF-IDF `MemoryKnowledgeBase` for local
+  dev; bring your own (Weaviate, Elasticsearch, pgvector) via a 3-method ABC.
+- **SSE streaming** — 12 event types (`THINKING`, `ACTION`, `OBSERVATION`,
+  `ANSWER`, etc.) with heartbeats.
+- **Admin API** — Status, tools, cache, config, KB endpoints as Flask
+  blueprint *and* FastAPI router. Framework-agnostic core.
+- **Middleware pipeline** — Tracing, retries, input validation, error
+  sanitization. Hook into any stage.
+- **No HTTP in core** — `httpx` is optional. You can run SwiftAgentX in
+  a Lambda, a Celery worker, or a notebook.
+
+## What's next (v0.3 roadmap)
+
+The v0.2.0 release hardens what's already here. v0.3+ goes after the
+2026-era patterns from frameworks like Claude Code:
+
+- **MCP server support** — Scenarios and ReAct can use tools from any MCP
+  server. One-line registration.
+- **4-layer Memory** — Current question / last-4-turns verbatim /
+  reference window / incremental rolling summary. Topic-change detection
+  triggers re-summarization.
+- **Hook system** — Lifecycle hooks (pre/post tool, pre/post classify) and
+  semantic hooks (topic change, scenario step conditional).
+- **Sub-agent dispatch** — From inside ReAct or a Scenario step, spawn a
+  focused sub-agent with isolated context. Parallel dispatch supported.
+- **Skill-in-ReAct** — Markdown-defined workflows the ReAct loop can pull in
+  on demand (different from Scenarios, which are pre-compiled and fast).
+- **Worktree-style workspace** — File sandbox per session for agents that
+  generate documents.
+- **Cache-friendly prompt order** — Anthropic / OpenAI prompt cache
+  optimization wired into the framework.
+- **Lazy tool loading** — When a registry grows past a threshold, LIGHT
+  model picks the relevant category before HEAVY sees schemas.
 
 ## Installation
 
