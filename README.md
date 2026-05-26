@@ -524,33 +524,137 @@ Apache-2.0
 
 ## 中文文档
 
-# SwiftAgent
+# SwiftAgentX
 
-**企业级快速响应 Agent 框架**
+**面向生产环境的 Agent 框架，围绕 *Scenario*（预编译执行路径）构建——
+在已知意图上完全跳过 ReAct 循环。**
 
-## 为什么选择 SwiftAgent？
+## 核心理念：Scenario
 
-大多数 Agent 框架对每个请求一视同仁——扔进 ReAct 循环，调用 3-5 次 LLM。这在 Demo 阶段没问题，但在生产环境中，你需要对常见场景**亚秒级响应**，只在真正需要时才进行**深度推理**。
+其它框架把每个请求都当作开放式推理问题对待。SwiftAgentX 不这么想。
+在生产环境中，**80% 的流量是可预测的**："查订单状态"、"问退货政策"、
+"预约 3 点的时段"。对这些请求来说，ReAct 循环是杀鸡用牛刀——
+3-5 次 LLM 调用、几秒延迟、一份没人解释得清楚的 token 账单。
 
-SwiftAgent 通过**分层执行策略**解决这个问题：
+**Scenario 是一条预编译的执行路径**：
 
-| 请求类型 | 执行路径 | 延迟 | LLM 调用次数 |
+```python
+agent.register_scenario("order_status", ScenarioConfig(
+    name="Order Status",
+    triggers=["订单", "我的快递在哪", "发货", "shipment"],
+    tool_chain=[
+        ToolChainStep(tool="order_db", query_template="$order_id"),
+        ToolChainStep(tool="courier_api", condition="status=in_transit"),
+    ],
+    cache_ttl=120,
+    output_type="direct",   # 不需要二次 LLM 调用来"润色"答案
+))
+```
+
+当 LIGHT 模型把请求分类为 `weather` / `order_status` / `balance_check` 这类
+场景时，SwiftAgentX **直接跑工具链**——不进 ReAct 循环，没有第二次 LLM
+调用。一次分类（LIGHT 模型，~200ms），一条工具链，结束。
+
+这是框架最大的设计赌注，也是它在生产环境延迟和成本上**真正甩开**
+LangChain / AutoGen / CrewAI 的地方。
+
+## 分层执行
+
+Scenario 位于四层执行模型的中央：
+
+| 请求类型 | 执行路径 | 延迟（mock LLM 实测） | LLM 调用次数 |
 |---|---|---|---|
-| 缓存命中 / KB 精准匹配 | 三级缓存 | ~0ms | 0 |
-| 高频业务场景 | 场景工具链 | ~200ms | 1（仅分类） |
-| 复杂推理 | 完整 ReAct 循环 | 2-10s | 3-10 |
-| 简单对话 | 直接 LLM 回复 | ~500ms | 1 |
+| 缓存命中 / KB 精准匹配 | Pipeline 短路 | **~0 ms** | **0** |
+| **已知意图（Scenario）** | **预编译工具链** | **~180 ms** | **1**（仅 LIGHT 分类） |
+| 开放式对话 | 直接 LLM 回复 | ~1.5 s | 2（LIGHT + HEAVY） |
+| 多步推理 | 完整 ReAct 循环 | 4-10 s | 3-7 |
+
+LIGHT 模型挑路径。HEAVY 模型只在请求确实需要开放式推理时才启动。
+真实可复现的 benchmark 数据见 [`benchmarks/`](benchmarks/)。
+
+### Scenario 里能装什么
+
+Scenario 不只是一个静态工具列表。链中的步骤可以是：
+
+- 一个原生 Python `Tool`
+- （v0.3+）一个 **MCP 工具**——任何
+  [Model Context Protocol](https://modelcontextprotocol.io) server 暴露的
+  工具，不需要写 Python wrapper
+- （v0.3+）一个 **hook**——条件触发器，当工具链命中特定状态时分支到
+  LLM 调用、子 Agent 调度、或外部 shell 逻辑
+
+这就是 Scenario 既快又能扩展的方式：路由决策很便宜，但每一步都能在
+需要时调用整个 Agent 工具箱。
+
+### vs. LangChain / AutoGen / CrewAI
+
+|  | SwiftAgentX | LangChain | AutoGen | CrewAI |
+|---|:---:|:---:|:---:|:---:|
+| **预编译 Scenario 短路** | **✅ 核心差异化** | ❌ 无对应概念 | ❌ 无对应概念 | ❌ 无对应概念 |
+| FAQ / 缓存命中 0 LLM 调用 | ✅ | 1-3 LLM 调用 | 2+ LLM 调用 | 2+ LLM 调用 |
+| 内置三级缓存（KB / Tool / Session） | ✅ | 部分支持 | ❌ | ❌ |
+| 双模型路由（LIGHT/HEAVY）原生内置 | ✅ | 自己接 | 自己接 | 自己接 |
+| Pipeline 阶段短路（KB / 安全 / 功能开关） | ✅ | 自己写 | ❌ | ❌ |
+| 流式细粒度事件类型 | ✅ 12 种 | ✅ | 部分 | ✅ |
+| 框架无关核心（`core/` 不依赖 HTTP） | ✅ | n/a | n/a | n/a |
+| 测试套件 | 111 个测试，**< 0.1 秒** | 庞大 | 庞大 | 中等 |
+
+LangChain 更广。SwiftAgentX 更专——专于流量可预测、延迟和单次
+LLM 成本是命门的生产场景。
+
+## 适合谁
+
+- 你做的 Agent 产品中，**多数请求是可预测的**（客服、订单运营、FAQ、
+  内部 copilot、AI 外呼），只有少数尾部需要真正的开放式推理。
+- 你把 **P95 延迟和单次请求 LLM 成本**当作一等公民指标，不是事后再说。
+- 你想要一个**一下午能读完**（4k 行源码）、改起来不害怕的框架。
+- 你习惯用 Python 配置 tool / KB / scenario，不喜欢 YAML/DSL。
+
+如果你想要"什么集成都有"的瑞士军刀工具包，去用 LangChain。如果你想要
+小而快、Scenario 是设计单元的框架，继续往下看。
 
 ## 核心特性
 
-- **双模型策略** — 轻量模型做意图分类（~200ms），重量模型做 ReAct 推理。分类要快，推理要深。
-- **场景工具链** — 高频场景走预定义工具链，跳过 ReAct 循环，每次请求节省 2-3 次 LLM 调用。
-- **三级缓存** — KB 精准匹配 / 工具结果（按用户隔离）/ 会话变量，热路径接近零延迟。
-- **知识库** — 可插拔知识库抽象层，内置 TF-IDF 内存实现。支持 Pipeline 阶段精准匹配短路。通过 ABC 轻松对接 Weaviate、Elasticsearch 等向量存储。
-- **管理后台** — 框架无关的管理服务层，附带 Flask Blueprint 和 FastAPI Router。开箱即用的状态、工具、缓存、配置、知识库管理端点。
-- **SSE 流式** — 细粒度事件系统（思考 / 行动 / 观察 / 回答），支持心跳保活。
-- **生产就绪** — 中间件流水线、请求追踪、指数退避重试、输入验证、错误脱敏。
-- **框架无关** — 内置 Flask 和 FastAPI 适配器，核心零 HTTP 依赖。
+- **Scenario** — 在已知意图上跳过 ReAct 循环的预编译执行路径。框架的
+  头号抽象。Scenario 链中每一步都可以是 Python tool、MCP tool、或条件 hook。
+- **分层执行** — Pipeline 短路 → Scenario → ReAct → Direct，由 LIGHT
+  分类器为每个请求挑路径。
+- **双模型路由** — `ModelTier.LIGHT` 做意图分类，`ModelTier.HEAVY` 做
+  推理。在真实 provider 上有 ~30× 的成本差。
+- **三级缓存** — KB 精准匹配（全局）、工具结果（按用户）、会话变量。
+  各自独立 TTL，周期清理。
+- **Pipeline 阶段** — 在 cache/route 之前插入 KB 短路、安全检查、功能开关
+  等任何自定义逻辑。阶段可返回 CONTINUE / SHORT_CIRCUIT / ABORT。
+- **知识库 ABC** — 内置 TF-IDF `MemoryKnowledgeBase` 用于本地开发；通过
+  3 方法 ABC 对接 Weaviate / Elasticsearch / pgvector。
+- **SSE 流式** — 12 种事件类型（`THINKING` / `ACTION` / `OBSERVATION` /
+  `ANSWER` 等），带心跳保活。
+- **管理后台** — Status、tools、cache、config、KB 端点，Flask Blueprint
+  *和* FastAPI Router 都内置。核心层框架无关。
+- **中间件流水线** — 追踪、重试、输入验证、错误脱敏，每个阶段都能挂 hook。
+- **核心层无 HTTP 依赖** — `httpx` 是可选项，可以在 Lambda、Celery worker、
+  或 Notebook 里跑 SwiftAgentX。
+
+## 下一步（v0.3 路线图）
+
+v0.2.0 把现有的部分打磨扎实。v0.3+ 引入受 Claude Code 等 2026 范式
+框架启发的设计：
+
+- **MCP server 支持** — Scenario 和 ReAct 都能用任何 MCP server 的 tool。
+  一行注册。
+- **4 层 Memory** — 当前问题 / 最近 4 轮 verbatim / 参考窗口 / 增量滚动
+  摘要。话题切换检测自动触发重新摘要。
+- **Hook 系统** — 生命周期 hook（pre/post tool、pre/post classify）+
+  语义 hook（话题切换、Scenario 步骤条件触发）。
+- **子 Agent 调度** — 从 ReAct 或 Scenario 步骤内部，spawn 一个上下文
+  隔离的专项子 Agent。支持并行调度。
+- **Skill-in-ReAct** — ReAct 循环可以按需调用的 markdown 定义的工作流
+  （与 Scenario 互补：Scenario 预编译且快，Skill 通用且解释执行）。
+- **Worktree-style 工作目录** — 为生成文档的 Agent 提供每会话沙箱。
+- **Cache-friendly prompt 顺序** — Anthropic / OpenAI prompt cache 优化
+  内置到框架。
+- **Tool 延迟加载** — 当 registry 数量超过阈值时，LIGHT 模型先挑类别
+  再让 HEAVY 看 schema。
 
 ## 安装
 
