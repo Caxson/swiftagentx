@@ -34,7 +34,14 @@ from ..tools.registry import ToolRegistry
 from ..tools.scenario import ScenarioConfig, ScenarioEngine
 from ..tools.termination import TerminationChecker
 from .cache import CacheManager
-from .memory import SessionMemory
+from .hooks import HookContext, HookEvent, HookRegistry, HookResult
+from .memory_hooks import TopicChangeHook
+from .memory_layers import (
+    InMemoryBackend,
+    LayeredMemoryConfig,
+    LayeredMemoryStore,
+    _default_summarizer_factory,
+)
 from .model_client import ModelClient
 from .parameter import ParameterManager
 from .pipeline import RequestPipeline
@@ -77,7 +84,24 @@ class Agent:
                 self._models[ModelTier.LIGHT] = model
 
         # Subsystems
-        self.memory = SessionMemory()
+        self.memory = LayeredMemoryStore(
+            backend=InMemoryBackend(),
+            config=LayeredMemoryConfig(
+                l2_size=self.config.memory_l2_size,
+                l3_max_size=self.config.memory_l3_max_size,
+                summarize_every_n_turns=self.config.memory_summarize_every_n_turns,
+                summarize_in_background=self.config.memory_summarize_in_background,
+            ),
+        )
+        # Bind the summarizer lazily so the agent's light_model wins even when
+        # callers swap models after construction.
+        self.memory.set_summarizer_factory(
+            lambda: _default_summarizer_factory(
+                self.light_model, self.memory.config.summarize_prompt_template,
+            )
+            if self._models
+            else None
+        )
         self.cache = CacheManager()
         self.prompt_manager = PromptManager()
         self.parameter_manager = ParameterManager()
@@ -87,6 +111,7 @@ class Agent:
         self.router = IntentRouter()
         self.pipeline = RequestPipeline()
         self.termination_checker = TerminationChecker()
+        self.hooks = HookRegistry()
 
         # Knowledge base
         self._knowledge_base: KnowledgeBase | None = None
@@ -96,6 +121,10 @@ class Agent:
 
         # Max iterations
         self.max_iterations = self.config.max_iterations
+
+        # Built-in hooks (opt-out via config flags).
+        if self.config.memory_enable_topic_change_hook:
+            self.hooks.register(TopicChangeHook())
 
     # --- Model access ---
 
@@ -172,6 +201,34 @@ class Agent:
     def register_tool(self, tool: Tool) -> None:
         self.tool_registry.register(tool)
 
+    # ------------------------------------------------------------------
+    # Hook dispatch helpers
+    # ------------------------------------------------------------------
+
+    async def _dispatch_hook(
+        self,
+        event: HookEvent,
+        *,
+        user_input: str,
+        session_id: str,
+        user_id: str,
+        memory: Any = None,
+        **fields: Any,
+    ) -> HookResult:
+        """Build a HookContext and run every registered hook for ``event``."""
+        if not self.hooks.list_hooks(event):
+            return HookResult()
+        ctx = HookContext(
+            event=event,
+            user_input=user_input,
+            session_id=session_id,
+            user_id=user_id,
+            agent=self,
+            memory=memory,
+            **fields,
+        )
+        return await self.hooks.dispatch(event, ctx)
+
     def register_scenario(self, scenario_id: str, scenario: ScenarioConfig) -> None:
         self.scenario_engine.register(scenario_id, scenario)
         self.router.register_scenarios({scenario_id: {"name": scenario.name, "description": scenario.description}})
@@ -217,12 +274,24 @@ class Agent:
             max_iterations=self.max_iterations,
         )
 
-        try:
-            # Lifecycle hook
-            await self.on_request_start(context)
+        # Acquire the per-session LayeredMemory (lazy-creates on first turn).
+        mem = await self.memory.get(session_id, user_id)
+        is_first_turn = mem.total_turns_added == 0
 
-            # Add user message to memory
-            self.memory.add_message("user", user_input)
+        try:
+            # Lifecycle: subclass method (legacy) + Hook system (declarative).
+            await self.on_request_start(context)
+            if is_first_turn:
+                await self._dispatch_hook(
+                    HookEvent.SESSION_START,
+                    user_input=user_input, session_id=session_id,
+                    user_id=user_id, memory=mem,
+                )
+            await self._dispatch_hook(
+                HookEvent.REQUEST_START,
+                user_input=user_input, session_id=session_id,
+                user_id=user_id, memory=mem,
+            )
 
             # Run request pipeline (KB short-circuit, security checks, etc.).
             # A stage that returns SHORT_CIRCUIT bypasses the rest of run().
@@ -237,7 +306,7 @@ class Agent:
                 stage_result = await self.pipeline.execute(pipeline_ctx)
                 if stage_result.action == StageAction.SHORT_CIRCUIT and stage_result.answer is not None:
                     answer = stage_result.answer
-                    self.memory.add_message("assistant", answer)
+                    await mem.add_turn(user_input, answer)
                     return AgentResponse(
                         session_id=session_id,
                         request_id=request_id,
@@ -268,7 +337,7 @@ class Agent:
                 )
                 if hit:
                     answer = str(cached_value)
-                    self.memory.add_message("assistant", answer)
+                    await mem.add_turn(user_input, answer)
                     return AgentResponse(
                         session_id=session_id,
                         request_id=request_id,
@@ -278,10 +347,33 @@ class Agent:
                         metadata={"cache_hit": True, "cache_source": source},
                     )
 
-            # Intent classification
+            # Intent classification (BEFORE_CLASSIFY is where TopicChangeHook
+            # detects a topic change and rolls L3 into L4 before downstream
+            # rendering sees the memory).
             await self.on_before_classify(context)
+            hook_result = await self._dispatch_hook(
+                HookEvent.BEFORE_CLASSIFY,
+                user_input=user_input, session_id=session_id,
+                user_id=user_id, memory=mem,
+            )
+            if hook_result.action == "short_circuit" and hook_result.answer is not None:
+                answer = hook_result.answer
+                await mem.add_turn(user_input, answer)
+                return AgentResponse(
+                    session_id=session_id, request_id=request_id, answer=answer,
+                    total_iterations=0,
+                    execution_time_ms=(time.time() - start_time) * 1000,
+                    metadata={"hook_short_circuit": True, **hook_result.metadata},
+                )
+
             intent = await self._classify_intent(user_input, context)
             await self.on_after_classify(context, intent)
+            await self._dispatch_hook(
+                HookEvent.AFTER_CLASSIFY,
+                user_input=user_input, session_id=session_id,
+                user_id=user_id, memory=mem, intent=intent,
+                scenario=intent.scenario,
+            )
 
             # Execute based on intent
             if intent.level == IntentLevel.SCENARIO and intent.scenario:
@@ -293,9 +385,14 @@ class Agent:
 
             # Post-processing hook
             answer = await self.on_before_respond(context, answer)
+            await self._dispatch_hook(
+                HookEvent.BEFORE_RESPOND,
+                user_input=user_input, session_id=session_id,
+                user_id=user_id, memory=mem, answer=answer,
+            )
 
-            # Add to memory
-            self.memory.add_message("assistant", answer)
+            # Record the completed turn (folds into L2; may fire summarize).
+            await mem.add_turn(user_input, answer)
 
             elapsed_ms = (time.time() - start_time) * 1000
             response = AgentResponse(
@@ -308,6 +405,11 @@ class Agent:
             )
 
             await self.on_request_end(context, response)
+            await self._dispatch_hook(
+                HookEvent.REQUEST_END,
+                user_input=user_input, session_id=session_id,
+                user_id=user_id, memory=mem, answer=answer,
+            )
             return response
 
         except Exception as e:
@@ -353,10 +455,23 @@ class Agent:
             ),
         )
 
+        mem = await self.memory.get(request.session_id, request.user_id)
+        is_first_turn = mem.total_turns_added == 0
+
         try:
             await self.on_request_start(context)
+            if is_first_turn:
+                await self._dispatch_hook(
+                    HookEvent.SESSION_START,
+                    user_input=request.user_input, session_id=request.session_id,
+                    user_id=request.user_id, memory=mem,
+                )
+            await self._dispatch_hook(
+                HookEvent.REQUEST_START,
+                user_input=request.user_input, session_id=request.session_id,
+                user_id=request.user_id, memory=mem,
+            )
             await adapter.send_event(SSEEventBuilder.initialized(f"{self.name} initialized"))
-            self.memory.add_message("user", request.user_input)
 
             # Cache check
             if self.config.enable_cache:
@@ -369,7 +484,7 @@ class Agent:
                     answer = str(cached_value)
                     await self._stream_answer(answer, adapter, request.session_id, request_id)
                     await adapter.finish()
-                    self.memory.add_message("assistant", answer)
+                    await mem.add_turn(request.user_input, answer)
                     return AgentResponse(
                         session_id=request.session_id, request_id=request_id,
                         answer=answer, total_iterations=0,
@@ -377,10 +492,21 @@ class Agent:
                         metadata={"cache_hit": True, "cache_source": source},
                     )
 
-            # Classification
+            # Classification (BEFORE_CLASSIFY hook can fire TopicChange + summarize).
             await self.on_before_classify(context)
+            await self._dispatch_hook(
+                HookEvent.BEFORE_CLASSIFY,
+                user_input=request.user_input, session_id=request.session_id,
+                user_id=request.user_id, memory=mem,
+            )
             intent = await self._classify_intent(request.user_input, context)
             await self.on_after_classify(context, intent)
+            await self._dispatch_hook(
+                HookEvent.AFTER_CLASSIFY,
+                user_input=request.user_input, session_id=request.session_id,
+                user_id=request.user_id, memory=mem, intent=intent,
+                scenario=intent.scenario,
+            )
 
             # Execute
             if intent.level == IntentLevel.SCENARIO and intent.scenario:
@@ -391,11 +517,16 @@ class Agent:
                 answer = await self._direct_response(context, adapter)
 
             answer = await self.on_before_respond(context, answer)
+            await self._dispatch_hook(
+                HookEvent.BEFORE_RESPOND,
+                user_input=request.user_input, session_id=request.session_id,
+                user_id=request.user_id, memory=mem, answer=answer,
+            )
             await self._stream_answer(answer, adapter, request.session_id, request_id)
             await adapter.send_event(SSEEventBuilder.completed())
             await adapter.finish()
 
-            self.memory.add_message("assistant", answer)
+            await mem.add_turn(request.user_input, answer)
             elapsed_ms = (time.time() - start_time) * 1000
 
             response = AgentResponse(
@@ -405,6 +536,11 @@ class Agent:
                 metadata={"intent_level": intent.level.value, "scenario": intent.scenario},
             )
             await self.on_request_end(context, response)
+            await self._dispatch_hook(
+                HookEvent.REQUEST_END,
+                user_input=request.user_input, session_id=request.session_id,
+                user_id=request.user_id, memory=mem, answer=answer,
+            )
             return response
 
         except Exception as e:
@@ -629,9 +765,10 @@ class Agent:
             system_prompt = self.config.system_prompt
 
         messages = [{"role": "system", "content": system_prompt}]
-        # Add conversation history
-        history = self.memory.get_conversation_for_reply(rounds=5)
-        messages.extend(history)
+        # Inject layered memory: L4 summary + L3 reference as a system message,
+        # then L2 verbatim turns as alternating user/assistant messages.
+        mem = await self.memory.get(context.session_id, context.user_id)
+        messages.extend(mem.to_chat_messages(l2_rounds=5))
         messages.append({"role": "user", "content": context.user_input})
 
         if adapter:

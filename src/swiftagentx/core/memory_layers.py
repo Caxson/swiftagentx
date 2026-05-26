@@ -411,6 +411,49 @@ class LayeredMemory:
 
         return "\n\n".join(sections)
 
+    # ---- chat-message rendering (OpenAI-compatible) ---------------------
+
+    def to_chat_messages(
+        self,
+        *,
+        include_l4: bool = True,
+        include_l3: bool = True,
+        l2_rounds: int | None = None,
+    ) -> list[dict[str, str]]:
+        """
+        Render the layered memory as an OpenAI-style chat message list.
+
+        L4 + L3 are folded into a single ``system`` message so they don't
+        confuse the model's turn-taking; L2 becomes a sequence of
+        alternating ``user`` / ``assistant`` messages — the format chat
+        models expect.
+
+        ``l2_rounds`` caps how many of the most recent L2 turns are emitted
+        (None = all of L2).
+        """
+        messages: list[dict[str, str]] = []
+
+        background: list[str] = []
+        if include_l4 and self.l4_summary:
+            background.append(
+                "Conversation history summary:\n" + self.l4_summary
+            )
+        if include_l3 and self.l3:
+            l3_block = "\n\n".join(t.to_prompt_block() for t in self.l3)
+            background.append("Older dialog (reference only):\n" + l3_block)
+        if background:
+            messages.append(
+                {"role": "system", "content": "\n\n".join(background)}
+            )
+
+        turns = self.l2
+        if l2_rounds is not None and l2_rounds >= 0:
+            turns = turns[-l2_rounds:]
+        for turn in turns:
+            messages.append({"role": "user", "content": turn.user_input})
+            messages.append({"role": "assistant", "content": turn.assistant_response})
+        return messages
+
     # ---- introspection / stats -----------------------------------------
 
     def stats(self) -> dict[str, Any]:
@@ -434,3 +477,84 @@ class LayeredMemory:
             self.total_turns_added = 0
             self.last_summarized_at = None
         await self.save()
+
+
+# ---------------------------------------------------------------------------
+# LayeredMemoryStore — per-session multiplexer
+# ---------------------------------------------------------------------------
+
+
+class LayeredMemoryStore:
+    """
+    Per-session multiplexer over ``LayeredMemory``.
+
+    A single Agent serves many sessions; each session needs its own
+    layered memory. ``LayeredMemoryStore`` lazily creates and caches one
+    ``LayeredMemory`` per session_id, sharing a single backend and a
+    single summarizer factory across sessions.
+
+    The summarizer factory is a callable ``() -> Summarizer`` invoked
+    once per new LayeredMemory, so each instance gets its own LIGHT-model
+    binding (useful for tests that inject a fake).
+    """
+
+    def __init__(
+        self,
+        *,
+        backend: MemoryBackend | None = None,
+        config: LayeredMemoryConfig | None = None,
+        summarizer_factory: Callable[[], Summarizer | None] | None = None,
+    ) -> None:
+        self.backend = backend or InMemoryBackend()
+        self.config = config or LayeredMemoryConfig()
+        self._summarizer_factory = summarizer_factory
+        self._sessions: dict[str, LayeredMemory] = {}
+        self._lock = asyncio.Lock()
+
+    def set_summarizer_factory(
+        self, factory: Callable[[], Summarizer | None]
+    ) -> None:
+        """
+        Configure how new LayeredMemory instances obtain their summarizer.
+
+        Existing instances are left untouched so an Agent can rotate
+        models without disturbing in-flight memory.
+        """
+        self._summarizer_factory = factory
+
+    async def get(self, session_id: str, user_id: str) -> LayeredMemory:
+        """Return the LayeredMemory for ``session_id``, creating it on first use."""
+        async with self._lock:
+            mem = self._sessions.get(session_id)
+            if mem is None:
+                summarizer = (
+                    self._summarizer_factory() if self._summarizer_factory else None
+                )
+                mem = LayeredMemory(
+                    session_id=session_id,
+                    user_id=user_id,
+                    backend=self.backend,
+                    config=self.config,
+                    summarizer=summarizer,
+                )
+                self._sessions[session_id] = mem
+        await mem.load()
+        return mem
+
+    def drop(self, session_id: str) -> bool:
+        """Forget our cached handle for ``session_id`` (backend storage untouched)."""
+        return self._sessions.pop(session_id, None) is not None
+
+    def list_sessions(self) -> list[str]:
+        return list(self._sessions.keys())
+
+    async def stats(self) -> dict[str, Any]:
+        return {
+            "active_sessions": len(self._sessions),
+            "config": {
+                "l2_size": self.config.l2_size,
+                "l3_max_size": self.config.l3_max_size,
+                "summarize_every_n_turns": self.config.summarize_every_n_turns,
+                "summarize_in_background": self.config.summarize_in_background,
+            },
+        }

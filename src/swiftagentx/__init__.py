@@ -13,11 +13,24 @@ from .admin.service import AdminService
 from .core.agent import Agent
 from .core.cache import CacheManager
 from .core.memory import Message, SessionMemory
+from .core.hooks import (
+    Hook,
+    HookContext,
+    HookEvent,
+    HookRegistry,
+    HookResult,
+    LLMHook,
+    PythonHook,
+    SemanticHook,
+    ShellHook,
+)
+from .core.memory_hooks import TopicChangeHook
 from .core.memory_layers import (
     DialogTurn,
     InMemoryBackend,
     LayeredMemory,
     LayeredMemoryConfig,
+    LayeredMemoryStore,
     MemoryBackend,
     MemorySnapshot,
 )
@@ -52,7 +65,11 @@ __all__ = [
     # v0.3 layered memory
     "DialogTurn", "MemorySnapshot",
     "MemoryBackend", "InMemoryBackend",
-    "LayeredMemoryConfig", "LayeredMemory",
+    "LayeredMemoryConfig", "LayeredMemory", "LayeredMemoryStore",
+    # v0.3 hooks
+    "Hook", "SemanticHook", "PythonHook", "LLMHook", "ShellHook",
+    "HookEvent", "HookContext", "HookResult", "HookRegistry",
+    "TopicChangeHook",
     "CacheManager",
     "PromptManager", "PromptTemplate",
     "IntentLevel", "IntentResult", "IntentRouter",

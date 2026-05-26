@@ -49,6 +49,13 @@ class SwiftAgentConfig(BaseModel):
     # Knowledge base
     kb_exact_match_threshold: float = 0.95
 
+    # Layered memory (v0.3)
+    memory_l2_size: int = 4
+    memory_l3_max_size: int = 6
+    memory_summarize_every_n_turns: int = 5
+    memory_summarize_in_background: bool = True
+    memory_enable_topic_change_hook: bool = True
+
     # Custom settings (extensible)
     extra: dict[str, Any] = Field(default_factory=dict)
 
