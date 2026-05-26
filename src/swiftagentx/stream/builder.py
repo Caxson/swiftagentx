@@ -2,7 +2,7 @@
 SSE event builder — convenience factory for creating stream events.
 """
 
-from typing import Optional
+
 from ..models.schema import StreamEvent, StreamEventType
 
 
@@ -18,7 +18,7 @@ class SSEEventBuilder:
         return StreamEvent(event_type=StreamEventType.KB_LOOKUP, data={"query": query, "status": status})
 
     @staticmethod
-    def cache_hit(source: str, content: Optional[str] = None) -> StreamEvent:
+    def cache_hit(source: str, content: str | None = None) -> StreamEvent:
         return StreamEvent(event_type=StreamEventType.CACHE_HIT, data={"source": source, "content": content})
 
     @staticmethod
@@ -66,9 +66,9 @@ class SSEEventBuilder:
     @staticmethod
     def answer_chunk(
         content: str,
-        conversation_id: Optional[str] = None,
-        message_id: Optional[str] = None,
-        task_id: Optional[str] = None,
+        conversation_id: str | None = None,
+        message_id: str | None = None,
+        task_id: str | None = None,
     ) -> StreamEvent:
         data: dict = {"answer": content}
         if conversation_id:
@@ -82,7 +82,7 @@ class SSEEventBuilder:
     @staticmethod
     def answer_end(
         final_answer: str,
-        post_processors: Optional[list] = None,
+        post_processors: list | None = None,
     ) -> StreamEvent:
         """Answer end event with optional post-processing hooks.
 
@@ -102,8 +102,8 @@ class SSEEventBuilder:
         conversation_id: str,
         message_id: str,
         created_at: int,
-        metadata: Optional[dict] = None,
-        task_id: Optional[str] = None,
+        metadata: dict | None = None,
+        task_id: str | None = None,
     ) -> StreamEvent:
         event_data: dict = {
             "conversation_id": conversation_id,

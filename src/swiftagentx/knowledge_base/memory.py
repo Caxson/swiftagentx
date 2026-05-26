@@ -7,15 +7,14 @@ Suitable for small-scale data (<10000 documents) and testing.
 
 import math
 from collections import Counter
-from typing import Dict, List, Optional
 
 from .base import KnowledgeBase
 from .document import Document, SearchResult
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     """Simple tokenizer: ASCII words + single CJK characters."""
-    tokens: List[str] = []
+    tokens: list[str] = []
     for char in text:
         if '\u4e00' <= char <= '\u9fff':
             tokens.append(char)
@@ -25,8 +24,8 @@ def _tokenize(text: str) -> List[str]:
             tokens.append(' ')
 
     # Merge consecutive ASCII chars into words
-    merged: List[str] = []
-    buf: List[str] = []
+    merged: list[str] = []
+    buf: list[str] = []
     for t in tokens:
         if t == ' ':
             if buf:
@@ -56,17 +55,17 @@ class MemoryKnowledgeBase(KnowledgeBase):
     """
 
     def __init__(self) -> None:
-        self._documents: Dict[str, Document] = {}
+        self._documents: dict[str, Document] = {}
         # Pre-computed TF-IDF data
-        self._doc_tf: Dict[str, Dict[str, float]] = {}
-        self._idf: Dict[str, float] = {}
+        self._doc_tf: dict[str, dict[str, float]] = {}
+        self._idf: dict[str, float] = {}
         self._dirty = True
 
-    async def search(self, query: str, top_k: int = 5) -> List[SearchResult]:
+    async def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
         if not self._documents:
             return []
 
-        results: List[SearchResult] = []
+        results: list[SearchResult] = []
         query_normalized = query.strip()
 
         # Phase 1: exact match
@@ -109,7 +108,7 @@ class MemoryKnowledgeBase(KnowledgeBase):
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:top_k]
 
-    async def add_documents(self, documents: List[Document]) -> int:
+    async def add_documents(self, documents: list[Document]) -> int:
         added = 0
         for doc in documents:
             self._documents[doc.doc_id] = doc
@@ -126,7 +125,7 @@ class MemoryKnowledgeBase(KnowledgeBase):
             return True
         return False
 
-    async def get_document(self, doc_id: str) -> Optional[Document]:
+    async def get_document(self, doc_id: str) -> Document | None:
         return self._documents.get(doc_id)
 
     async def count(self) -> int:
@@ -160,7 +159,7 @@ class MemoryKnowledgeBase(KnowledgeBase):
         self._dirty = False
 
     @staticmethod
-    def _compute_tf(tokens: List[str]) -> Dict[str, float]:
+    def _compute_tf(tokens: list[str]) -> dict[str, float]:
         if not tokens:
             return {}
         counts = Counter(tokens)
@@ -169,7 +168,7 @@ class MemoryKnowledgeBase(KnowledgeBase):
 
     @staticmethod
     def _cosine_similarity(
-        vec_a: Dict[str, float], vec_b: Dict[str, float]
+        vec_a: dict[str, float], vec_b: dict[str, float]
     ) -> float:
         common_keys = set(vec_a) & set(vec_b)
         if not common_keys:

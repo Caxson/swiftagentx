@@ -3,7 +3,7 @@ Storage backend abstract interface.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class StorageBackend(ABC):
@@ -15,16 +15,16 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def save_message(
-        self, conversation_id: str, role: str, content: str, metadata: Optional[Dict[str, Any]] = None
+        self, conversation_id: str, role: str, content: str, metadata: dict[str, Any] | None = None
     ) -> bool:
         ...
 
     @abstractmethod
-    async def get_history(self, conversation_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    async def get_history(self, conversation_id: str, limit: int = 10) -> list[dict[str, Any]]:
         ...
 
     @abstractmethod
-    async def save_request_log(self, request_data: Dict[str, Any]) -> bool:
+    async def save_request_log(self, request_data: dict[str, Any]) -> bool:
         ...
 
     async def close(self) -> None:

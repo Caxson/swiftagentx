@@ -2,8 +2,8 @@
 Parameter management — global and session-level parameters with thread safety.
 """
 
-from typing import Any, Dict, Optional, Type
 from threading import RLock
+from typing import Any
 
 
 class ParameterManager:
@@ -12,12 +12,12 @@ class ParameterManager:
     """
 
     def __init__(self) -> None:
-        self.global_params: Dict[str, Dict[str, Any]] = {}
-        self.session_params: Dict[str, Dict[str, Any]] = {}
+        self.global_params: dict[str, dict[str, Any]] = {}
+        self.session_params: dict[str, dict[str, Any]] = {}
         self._lock = RLock()
 
     def register_global_param(
-        self, name: str, type_: Type = str, default: Any = None, description: str = ""
+        self, name: str, type_: type = str, default: Any = None, description: str = ""
     ) -> None:
         with self._lock:
             if name not in self.global_params:
@@ -47,7 +47,7 @@ class ParameterManager:
                 return self.session_params[session_id].get(name, default)
             return default
 
-    def get_all_session_params(self, session_id: str) -> Dict[str, Any]:
+    def get_all_session_params(self, session_id: str) -> dict[str, Any]:
         with self._lock:
             return self.session_params.get(session_id, {}).copy()
 
@@ -55,7 +55,7 @@ class ParameterManager:
         with self._lock:
             self.session_params.pop(session_id, None)
 
-    def get_merged_params(self, session_id: str) -> Dict[str, Any]:
+    def get_merged_params(self, session_id: str) -> dict[str, Any]:
         with self._lock:
             merged = {name: cfg.get("value") for name, cfg in self.global_params.items()}
             if session_id in self.session_params:
@@ -68,7 +68,7 @@ class ParameterManager:
             self.session_params.clear()
 
 
-_global_parameter_manager: Optional[ParameterManager] = None
+_global_parameter_manager: ParameterManager | None = None
 
 
 def get_parameter_manager() -> ParameterManager:

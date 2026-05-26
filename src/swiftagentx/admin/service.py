@@ -16,7 +16,7 @@ import concurrent.futures
 import logging
 import re
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..core.agent import Agent
@@ -58,13 +58,13 @@ class AdminService:
         status = service.get_status()
     """
 
-    def __init__(self, agent: "Agent") -> None:
+    def __init__(self, agent: Agent) -> None:
         self.agent = agent
         self._start_time = time.time()
 
     # ---- Status ----
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """Agent name, tool count, cache stats, uptime."""
         return {
             "name": self.agent.name,
@@ -75,24 +75,24 @@ class AdminService:
             "uptime_seconds": round(time.time() - self._start_time, 1),
         }
 
-    def get_tools(self) -> List[Dict[str, Any]]:
+    def get_tools(self) -> list[dict[str, Any]]:
         """Return JSON schema for every registered tool."""
         return [
             tool.get_schema()
             for tool in self.agent.tool_registry.get_all().values()
         ]
 
-    def get_cache_stats(self) -> Dict[str, Any]:
+    def get_cache_stats(self) -> dict[str, Any]:
         return self.agent.cache.get_stats()
 
     # ---- Configuration ----
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         """Return current config with sensitive values masked."""
         raw = self.agent.config.model_dump()
         return self._mask_secrets(raw)
 
-    def update_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+    def update_config(self, updates: dict[str, Any]) -> dict[str, Any]:
         """
         Update config fields at runtime.
 
@@ -118,7 +118,7 @@ class AdminService:
 
     # ---- Cache management ----
 
-    def clear_cache(self, level: Optional[str] = None) -> Dict[str, Any]:
+    def clear_cache(self, level: str | None = None) -> dict[str, Any]:
         """
         Clear cache entries.
 
@@ -148,7 +148,7 @@ class AdminService:
 
     # ---- Knowledge base (sync wrappers) ----
 
-    def kb_search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def kb_search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Synchronous wrapper — safe in both sync and async contexts."""
         kb = self.agent.knowledge_base
         if kb is None:
@@ -156,7 +156,7 @@ class AdminService:
         results = _run_sync(kb.search(query, top_k=top_k))
         return self._format_search_results(results)
 
-    def kb_add_documents(self, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def kb_add_documents(self, documents: list[dict[str, Any]]) -> dict[str, Any]:
         kb = self.agent.knowledge_base
         if kb is None:
             return {"error": "No knowledge base configured"}
@@ -168,14 +168,14 @@ class AdminService:
         added = _run_sync(kb.add_documents(docs))
         return {"added": added}
 
-    def kb_delete_document(self, doc_id: str) -> Dict[str, Any]:
+    def kb_delete_document(self, doc_id: str) -> dict[str, Any]:
         kb = self.agent.knowledge_base
         if kb is None:
             return {"error": "No knowledge base configured"}
         deleted = _run_sync(kb.delete_document(doc_id))
         return {"deleted": deleted, "doc_id": doc_id}
 
-    def kb_stats(self) -> Dict[str, Any]:
+    def kb_stats(self) -> dict[str, Any]:
         kb = self.agent.knowledge_base
         if kb is None:
             return {"error": "No knowledge base configured"}
@@ -184,14 +184,14 @@ class AdminService:
 
     # ---- Knowledge base (async) ----
 
-    async def kb_search_async(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    async def kb_search_async(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         kb = self.agent.knowledge_base
         if kb is None:
             return []
         results = await kb.search(query, top_k=top_k)
         return self._format_search_results(results)
 
-    async def kb_add_documents_async(self, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def kb_add_documents_async(self, documents: list[dict[str, Any]]) -> dict[str, Any]:
         kb = self.agent.knowledge_base
         if kb is None:
             return {"error": "No knowledge base configured"}
@@ -203,14 +203,14 @@ class AdminService:
         added = await kb.add_documents(docs)
         return {"added": added}
 
-    async def kb_delete_document_async(self, doc_id: str) -> Dict[str, Any]:
+    async def kb_delete_document_async(self, doc_id: str) -> dict[str, Any]:
         kb = self.agent.knowledge_base
         if kb is None:
             return {"error": "No knowledge base configured"}
         deleted = await kb.delete_document(doc_id)
         return {"deleted": deleted, "doc_id": doc_id}
 
-    async def kb_stats_async(self) -> Dict[str, Any]:
+    async def kb_stats_async(self) -> dict[str, Any]:
         kb = self.agent.knowledge_base
         if kb is None:
             return {"error": "No knowledge base configured"}
@@ -220,7 +220,7 @@ class AdminService:
     # ---- Helpers ----
 
     @staticmethod
-    def _format_search_results(results) -> List[Dict[str, Any]]:
+    def _format_search_results(results) -> list[dict[str, Any]]:
         return [
             {
                 "doc_id": r.document.doc_id,
@@ -233,7 +233,7 @@ class AdminService:
         ]
 
     @staticmethod
-    def _mask_secrets(data: Dict[str, Any]) -> Dict[str, Any]:
+    def _mask_secrets(data: dict[str, Any]) -> dict[str, Any]:
         """Mask values that look like API keys or secrets."""
         masked = {}
         secret_pattern = re.compile(

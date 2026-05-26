@@ -2,9 +2,10 @@
 Middleware system — process requests through a chain of middleware.
 """
 
-from abc import ABC, abstractmethod
-from typing import Any, Callable, Coroutine, Dict, List, Optional
 import logging
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +21,9 @@ class Middleware(ABC):
     @abstractmethod
     async def process(
         self,
-        context: Dict[str, Any],
-        next_handler: Callable[[Dict[str, Any]], Coroutine[Any, Any, Dict[str, Any]]],
-    ) -> Dict[str, Any]:
+        context: dict[str, Any],
+        next_handler: Callable[[dict[str, Any]], Coroutine[Any, Any, dict[str, Any]]],
+    ) -> dict[str, Any]:
         """
         Process the request.
 
@@ -42,19 +43,19 @@ class MiddlewareChain:
     """
 
     def __init__(self) -> None:
-        self._middlewares: List[Middleware] = []
+        self._middlewares: list[Middleware] = []
 
     def add(self, middleware: Middleware) -> None:
         self._middlewares.append(middleware)
 
-    async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Execute the middleware chain."""
         if not self._middlewares:
             return context
 
         index = 0
 
-        async def next_handler(ctx: Dict[str, Any]) -> Dict[str, Any]:
+        async def next_handler(ctx: dict[str, Any]) -> dict[str, Any]:
             nonlocal index
             if index < len(self._middlewares):
                 mw = self._middlewares[index]
@@ -74,9 +75,9 @@ class TracingMiddleware(Middleware):
 
     async def process(
         self,
-        context: Dict[str, Any],
-        next_handler: Callable[[Dict[str, Any]], Coroutine[Any, Any, Dict[str, Any]]],
-    ) -> Dict[str, Any]:
+        context: dict[str, Any],
+        next_handler: Callable[[dict[str, Any]], Coroutine[Any, Any, dict[str, Any]]],
+    ) -> dict[str, Any]:
         import time
         request_id = context.get("request_id", "unknown")
         start = time.time()

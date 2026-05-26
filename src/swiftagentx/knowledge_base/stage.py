@@ -5,7 +5,7 @@ Insert into the RequestPipeline to short-circuit on exact KB matches.
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from ..core.pipeline import PipelineStage, StageAction, StageResult
 from .base import KnowledgeBase
@@ -35,7 +35,7 @@ class KnowledgeBaseStage(PipelineStage):
         self.threshold = threshold
         self.top_k = top_k
 
-    async def execute(self, context: Dict[str, Any]) -> StageResult:
+    async def execute(self, context: dict[str, Any]) -> StageResult:
         user_input = context.get("user_input", "")
         if not user_input:
             return StageResult(action=StageAction.CONTINUE)

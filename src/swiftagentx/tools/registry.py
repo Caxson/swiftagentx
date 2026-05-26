@@ -2,8 +2,8 @@
 Tool registry — manages all available tools.
 """
 
-from typing import Dict, List, Optional
 from threading import RLock
+
 from .base import Tool
 
 
@@ -13,8 +13,8 @@ class ToolRegistry:
     """
 
     def __init__(self) -> None:
-        self.tools: Dict[str, Tool] = {}
-        self.tool_categories: Dict[str, List[str]] = {}
+        self.tools: dict[str, Tool] = {}
+        self.tool_categories: dict[str, list[str]] = {}
         self._lock = RLock()
 
     def register(self, tool: Tool) -> None:
@@ -35,28 +35,28 @@ class ToolRegistry:
                 return True
             return False
 
-    def get(self, tool_name: str) -> Optional[Tool]:
+    def get(self, tool_name: str) -> Tool | None:
         with self._lock:
             return self.tools.get(tool_name)
 
-    def get_all(self) -> Dict[str, Tool]:
+    def get_all(self) -> dict[str, Tool]:
         with self._lock:
             return self.tools.copy()
 
-    def get_by_category(self, category: str) -> List[Tool]:
+    def get_by_category(self, category: str) -> list[Tool]:
         with self._lock:
             tool_names = self.tool_categories.get(category, [])
             return [self.tools[name] for name in tool_names if name in self.tools]
 
-    def list_tools(self) -> List[str]:
+    def list_tools(self) -> list[str]:
         with self._lock:
             return list(self.tools.keys())
 
-    def list_categories(self) -> List[str]:
+    def list_categories(self) -> list[str]:
         with self._lock:
             return list(self.tool_categories.keys())
 
-    def get_schemas(self) -> Dict[str, dict]:
+    def get_schemas(self) -> dict[str, dict]:
         with self._lock:
             return {name: tool.get_schema() for name, tool in self.tools.items()}
 

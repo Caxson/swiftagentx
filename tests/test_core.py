@@ -3,12 +3,13 @@ Tests for core modules: memory, prompt, parameter, router, pipeline.
 """
 
 import pytest
-from swiftagentx.core.memory import SessionMemory, Message
-from swiftagentx.core.prompt import PromptManager
-from swiftagentx.core.parameter import ParameterManager
-from swiftagentx.core.router import IntentRouter, IntentLevel
-from swiftagentx.core.pipeline import RequestPipeline, PipelineStage, StageResult, StageAction
+
 from swiftagentx import DummyModelClient
+from swiftagentx.core.memory import SessionMemory
+from swiftagentx.core.parameter import ParameterManager
+from swiftagentx.core.pipeline import PipelineStage, RequestPipeline, StageAction, StageResult
+from swiftagentx.core.prompt import PromptManager
+from swiftagentx.core.router import IntentLevel, IntentRouter
 
 
 class TestSessionMemory:

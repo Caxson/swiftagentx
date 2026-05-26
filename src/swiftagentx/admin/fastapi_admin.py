@@ -12,16 +12,16 @@ Usage::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .service import AdminService
 
 
 def create_fastapi_admin_router(
-    service: "AdminService",
+    service: AdminService,
     prefix: str = "/admin",
-    tags: Optional[List[str]] = None,
+    tags: list[str] | None = None,
 ):
     """
     Create a FastAPI APIRouter wired to *service*.
@@ -39,17 +39,17 @@ def create_fastapi_admin_router(
     # -- Request models --
 
     class CacheClearRequest(BaseModel):
-        level: Optional[str] = None
+        level: str | None = None
 
     class KBSearchRequest(BaseModel):
         query: str
         top_k: int = 5
 
     class KBAddDocumentsRequest(BaseModel):
-        documents: List[Dict[str, Any]]
+        documents: list[dict[str, Any]]
 
     class ConfigUpdateRequest(BaseModel):
-        updates: Dict[str, Any] = {}
+        updates: dict[str, Any] = {}
 
     # -- Endpoints --
 

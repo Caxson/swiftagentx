@@ -9,15 +9,14 @@ import pytest
 
 from swiftagentx import (
     Agent,
-    DummyModelClient,
     Document,
-    SearchResult,
-    MemoryKnowledgeBase,
-    KnowledgeBaseTool,
+    DummyModelClient,
     KnowledgeBaseStage,
+    KnowledgeBaseTool,
+    MemoryKnowledgeBase,
+    SearchResult,
 )
 from swiftagentx.core.pipeline import StageAction
-
 
 # ---- fixtures ----
 

@@ -2,9 +2,10 @@
 Tests for the SSE streaming system.
 """
 
+
 import pytest
-import asyncio
-from swiftagentx import SSEStreamAdapter, SSEEventBuilder
+
+from swiftagentx import SSEEventBuilder, SSEStreamAdapter
 from swiftagentx.models.schema import StreamEventType
 
 

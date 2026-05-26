@@ -5,11 +5,12 @@ Default stages: Cache Check -> Intent Route -> Execute (ReAct/Scenario/Direct) -
 Users can insert custom stages (security check, KB lookup, etc.).
 """
 
+import logging
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 from pydantic import BaseModel
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +25,9 @@ class StageAction(str, Enum):
 class StageResult(BaseModel):
     """Result returned by a pipeline stage."""
     action: StageAction = StageAction.CONTINUE
-    data: Dict[str, Any] = {}
-    answer: Optional[str] = None  # If set and action is SHORT_CIRCUIT, this is the final answer
-    metadata: Dict[str, Any] = {}
+    data: dict[str, Any] = {}
+    answer: str | None = None  # If set and action is SHORT_CIRCUIT, this is the final answer
+    metadata: dict[str, Any] = {}
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -42,7 +43,7 @@ class PipelineStage(ABC):
         self.name = name or self.__class__.__name__
 
     @abstractmethod
-    async def execute(self, context: Dict[str, Any]) -> StageResult:
+    async def execute(self, context: dict[str, Any]) -> StageResult:
         """
         Execute this pipeline stage.
 
@@ -68,7 +69,7 @@ class RequestPipeline:
     """
 
     def __init__(self) -> None:
-        self.stages: List[PipelineStage] = []
+        self.stages: list[PipelineStage] = []
 
     def add_stage(self, stage: PipelineStage) -> "RequestPipeline":
         self.stages.append(stage)
@@ -85,7 +86,7 @@ class RequestPipeline:
                 return True
         return False
 
-    async def execute(self, context: Dict[str, Any]) -> StageResult:
+    async def execute(self, context: dict[str, Any]) -> StageResult:
         """
         Execute all stages in sequence.
 
@@ -123,5 +124,5 @@ class RequestPipeline:
 
         return last_result
 
-    def list_stages(self) -> List[str]:
+    def list_stages(self) -> list[str]:
         return [s.name for s in self.stages]

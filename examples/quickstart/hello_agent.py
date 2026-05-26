@@ -8,7 +8,8 @@ Usage:
 """
 
 import asyncio
-from swiftagentx import Agent, Tool, ToolOutput, DummyModelClient
+
+from swiftagentx import Agent, DummyModelClient, Tool, ToolOutput
 
 
 class EchoTool(Tool):

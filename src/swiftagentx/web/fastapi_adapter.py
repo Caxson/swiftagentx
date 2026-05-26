@@ -4,9 +4,9 @@ FastAPI SSE adapter — integrates SwiftAgent with FastAPI applications.
 Requires: pip install swiftagent[fastapi]
 """
 
-from typing import Any
 import asyncio
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

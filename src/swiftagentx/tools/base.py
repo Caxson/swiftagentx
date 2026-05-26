@@ -4,7 +4,8 @@ Tool base classes and type definitions.
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
 from pydantic import BaseModel
 
 
@@ -19,9 +20,9 @@ class ToolOutput(BaseModel):
     """Tool execution output."""
     success: bool
     result: Any
-    error: Optional[str] = None
+    error: str | None = None
     output_type: ToolOutputType = ToolOutputType.LLM_PROCESSED
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
 
     model_config = {"use_enum_values": False}
 
@@ -33,7 +34,7 @@ class AgentContext(Protocol):
     Any object that has these attributes will work as a context for tool execution.
     The built-in SessionContext satisfies this protocol.
     """
-    variables: Dict[str, Any]
+    variables: dict[str, Any]
     user_input: str
     session_id: str
 
@@ -79,7 +80,7 @@ class Tool(ABC):
         """Validate tool input (override for custom validation)."""
         return True
 
-    def get_schema(self) -> Dict[str, Any]:
+    def get_schema(self) -> dict[str, Any]:
         """Get tool JSON schema (for LLM function calling)."""
         return {
             "name": self.name,

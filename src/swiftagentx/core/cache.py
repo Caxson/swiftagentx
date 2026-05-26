@@ -7,10 +7,10 @@ Level 3: Dynamic/session cache (session variables, no expiry)
 Scenario cache: Pre-defined scenario toolchain cache
 """
 
-from typing import Any, Dict, Optional, Tuple
-from datetime import datetime, timedelta
 import hashlib
 import logging
+from datetime import datetime, timedelta
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class CacheEntry:
         value: Any,
         cache_type: str,
         ttl_seconds: int = 300,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ):
         self.key = key
         self.value = value
@@ -58,16 +58,16 @@ class CacheManager:
 
     def __init__(self, max_entries_per_level: int = 10000) -> None:
         self.max_entries_per_level = max_entries_per_level
-        self.level_1_cache: Dict[str, CacheEntry] = {}
-        self.level_2_cache: Dict[str, Dict[str, CacheEntry]] = {}
-        self.level_3_cache: Dict[str, Dict[str, Any]] = {}
-        self.scenario_cache: Dict[str, CacheEntry] = {}
+        self.level_1_cache: dict[str, CacheEntry] = {}
+        self.level_2_cache: dict[str, dict[str, CacheEntry]] = {}
+        self.level_3_cache: dict[str, dict[str, Any]] = {}
+        self.scenario_cache: dict[str, CacheEntry] = {}
         self.stats = {"level_1_hits": 0, "level_2_hits": 0, "level_3_hits": 0, "scenario_hits": 0}
         self._access_count = 0
 
     def query(
         self, query: str, user_id: str, session_id: str, platform: str = "default"
-    ) -> Tuple[bool, Optional[Any], str]:
+    ) -> tuple[bool, Any | None, str]:
         """
         Query all cache levels in order.
 
@@ -102,7 +102,7 @@ class CacheManager:
 
         return False, None, ""
 
-    def _query_level_1(self, query: str) -> Tuple[bool, Optional[Any]]:
+    def _query_level_1(self, query: str) -> tuple[bool, Any | None]:
         query_hash = self._hash_key(query)
         if query_hash in self.level_1_cache:
             entry = self.level_1_cache[query_hash]
@@ -113,7 +113,7 @@ class CacheManager:
                 del self.level_1_cache[query_hash]
         return False, None
 
-    def _query_level_2(self, query: str, user_id: str, platform: str = "default") -> Tuple[bool, Optional[Any]]:
+    def _query_level_2(self, query: str, user_id: str, platform: str = "default") -> tuple[bool, Any | None]:
         if user_id not in self.level_2_cache:
             return False, None
         query_hash = self._hash_key(f"{user_id}:{platform}:{query}")
@@ -126,14 +126,14 @@ class CacheManager:
                 del self.level_2_cache[user_id][query_hash]
         return False, None
 
-    def _query_level_3(self, query: str, session_id: str) -> Tuple[bool, Optional[Any]]:
+    def _query_level_3(self, query: str, session_id: str) -> tuple[bool, Any | None]:
         if session_id not in self.level_3_cache:
             return False, None
         if query in self.level_3_cache[session_id]:
             return True, self.level_3_cache[session_id][query]
         return False, None
 
-    def _evict_oldest(self, cache: Dict[str, CacheEntry]) -> None:
+    def _evict_oldest(self, cache: dict[str, CacheEntry]) -> None:
         """Evict oldest entries when cache exceeds max size."""
         if self.max_entries_per_level <= 0 or len(cache) <= self.max_entries_per_level:
             return
@@ -168,7 +168,7 @@ class CacheManager:
             self.level_3_cache[session_id] = {}
         self.level_3_cache[session_id][key] = value
 
-    def get_session_cache(self, session_id: str) -> Dict[str, Any]:
+    def get_session_cache(self, session_id: str) -> dict[str, Any]:
         return self.level_3_cache.get(session_id, {}).copy()
 
     def clear_session_cache(self, session_id: str) -> None:
@@ -179,7 +179,7 @@ class CacheManager:
 
     # --- Scenario cache ---
 
-    def get_scenario_cache(self, scenario: str, cache_key: str) -> Optional[Any]:
+    def get_scenario_cache(self, scenario: str, cache_key: str) -> Any | None:
         full_key = f"scenario:{scenario}:{cache_key}"
         if full_key in self.scenario_cache:
             entry = self.scenario_cache[full_key]
@@ -200,7 +200,7 @@ class CacheManager:
         )
         self._evict_oldest(self.scenario_cache)
 
-    def clear_scenario_cache(self, scenario: Optional[str] = None) -> None:
+    def clear_scenario_cache(self, scenario: str | None = None) -> None:
         if scenario:
             prefix = f"scenario:{scenario}:"
             keys_to_delete = [k for k in self.scenario_cache if k.startswith(prefix)]
@@ -225,7 +225,7 @@ class CacheManager:
         for key in expired_sc:
             del self.scenario_cache[key]
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         total_hits = sum(self.stats.values())
         return {
             **self.stats,

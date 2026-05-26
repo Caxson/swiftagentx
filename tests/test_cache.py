@@ -2,7 +2,6 @@
 Tests for the three-level cache system.
 """
 
-import pytest
 from swiftagentx.core.cache import CacheManager
 
 
@@ -82,7 +81,7 @@ class TestCacheManager:
     def test_uses_sha256_not_md5(self):
         import hashlib
         cache = CacheManager()
-        expected = hashlib.sha256("test".encode()).hexdigest()
+        expected = hashlib.sha256(b"test").hexdigest()
         actual = cache._hash_key("test")
         assert actual == expected
         assert len(actual) == 64  # SHA-256 hex digest length

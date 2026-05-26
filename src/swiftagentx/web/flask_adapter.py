@@ -7,11 +7,11 @@ Note: This adapter is suitable for development and moderate traffic.
 For production with high concurrency, consider using the FastAPI adapter.
 """
 
-from typing import Any
-from concurrent.futures import ThreadPoolExecutor
 import asyncio
-import logging
 import json
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,8 @@ def create_flask_blueprint(
         app.register_blueprint(bp)
     """
     try:
-        from flask import Blueprint, Response, request as flask_request, stream_with_context
+        from flask import Blueprint, Response, stream_with_context
+        from flask import request as flask_request
     except ImportError:
         raise ImportError("Flask is required. Install with: pip install swiftagent[flask]")
 

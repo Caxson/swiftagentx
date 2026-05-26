@@ -1,3 +1,3 @@
-from ..core.model_client import ModelClient, ModelResponse, DummyModelClient, ModelClientFactory
+from ..core.model_client import DummyModelClient, ModelClient, ModelClientFactory, ModelResponse
 
 __all__ = ["ModelClient", "ModelResponse", "DummyModelClient", "ModelClientFactory"]

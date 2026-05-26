@@ -3,10 +3,14 @@ Tests for the tool system.
 """
 
 import pytest
+
 from swiftagentx import (
-    Tool, ToolOutput, ToolOutputType,
-    ToolRegistry, ToolExecutor,
     SessionContext,
+    Tool,
+    ToolExecutor,
+    ToolOutput,
+    ToolOutputType,
+    ToolRegistry,
 )
 
 

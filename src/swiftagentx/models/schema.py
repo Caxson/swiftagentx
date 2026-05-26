@@ -2,11 +2,12 @@
 SwiftAgent core data models.
 """
 
-from enum import Enum
-from typing import Any, Dict, List, Optional
-from datetime import datetime
-from pydantic import BaseModel, Field
 import json
+from datetime import datetime
+from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 
 class StreamEventType(Enum):
@@ -43,7 +44,7 @@ class StreamEventType(Enum):
 class StreamEvent(BaseModel):
     """Stream event object."""
     event_type: StreamEventType
-    data: Dict[str, Any] = Field(default_factory=dict)
+    data: dict[str, Any] = Field(default_factory=dict)
     step_index: int = 0
     iteration: int = 0
     timestamp: float = Field(default_factory=lambda: datetime.now().timestamp())
@@ -75,9 +76,9 @@ class ContextParameters(BaseModel):
     """Session context parameters container."""
     app_version: str = "1.0.0"
     platform: str = "default"
-    device_id: Optional[str] = None
+    device_id: str | None = None
     channel: str = "default"
-    extra_params: Dict[str, Any] = Field(default_factory=dict)
+    extra_params: dict[str, Any] = Field(default_factory=dict)
 
     def get(self, key: str, default: Any = None) -> Any:
         if key in ("app_version", "platform", "device_id", "channel"):
@@ -90,7 +91,7 @@ class ContextParameters(BaseModel):
         else:
             self.extra_params[key] = value
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "app_version": self.app_version,
             "platform": self.platform,
@@ -105,16 +106,16 @@ class SessionContext(BaseModel):
     session_id: str
     user_id: str
     user_input: str
-    parameters: Optional[ContextParameters] = Field(default_factory=ContextParameters)
+    parameters: ContextParameters | None = Field(default_factory=ContextParameters)
 
     # Execution state
     current_iteration: int = 0
     max_iterations: int = 10
 
     # Memory and step tracking
-    steps: List[Dict[str, Any]] = Field(default_factory=list)
-    variables: Dict[str, Any] = Field(default_factory=dict)
-    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    steps: list[dict[str, Any]] = Field(default_factory=list)
+    variables: dict[str, Any] = Field(default_factory=dict)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
 
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.now)
@@ -126,7 +127,7 @@ class SessionContext(BaseModel):
         self,
         step_type: str,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         input_data: Any = None,
         output_data: Any = None,
     ) -> None:
@@ -149,7 +150,7 @@ class SessionContext(BaseModel):
     def get_variable(self, key: str, default: Any = None) -> Any:
         return self.variables.get(key, default)
 
-    def add_message(self, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    def add_message(self, role: str, content: str, metadata: dict[str, Any] | None = None) -> None:
         message = {
             "role": role,
             "content": content,
@@ -168,9 +169,9 @@ class AgentRequest(BaseModel):
 
     app_version: str = Field("1.0.0", description="App version")
     platform: str = Field("default", description="Platform")
-    device_id: Optional[str] = Field(None, description="Device ID")
+    device_id: str | None = Field(None, description="Device ID")
     channel: str = Field("default", description="Channel")
-    extra_params: Dict[str, Any] = Field(default_factory=dict, description="Custom parameters")
+    extra_params: dict[str, Any] = Field(default_factory=dict, description="Custom parameters")
 
 
 class AgentResponse(BaseModel):
@@ -180,13 +181,13 @@ class AgentResponse(BaseModel):
     answer: str
     total_iterations: int
     execution_time_ms: float
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolExecutionRequest(BaseModel):
     """Tool execution request."""
     tool_name: str = Field(..., description="Tool name")
-    tool_input: Dict[str, Any] = Field(default_factory=dict, description="Tool input parameters")
+    tool_input: dict[str, Any] = Field(default_factory=dict, description="Tool input parameters")
     session_id: str = Field(..., description="Session ID")
     iteration: int = Field(0, description="Current iteration")
 
@@ -195,10 +196,10 @@ class ToolExecutionResult(BaseModel):
     """Tool execution result."""
     tool_name: str
     success: bool
-    result: Dict[str, Any] = Field(default_factory=dict)
-    error: Optional[str] = None
+    result: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
     execution_time_ms: float = 0.0
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ThoughtStep(BaseModel):
@@ -214,7 +215,7 @@ class ActionStep(BaseModel):
     """Action step in ReAct loop."""
     iteration: int
     tool_name: str
-    tool_input: Dict[str, Any]
+    tool_input: dict[str, Any]
     timestamp: datetime = Field(default_factory=datetime.now)
 
 

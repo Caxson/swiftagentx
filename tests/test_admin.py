@@ -8,13 +8,11 @@ knowledge base management, and config masking.
 import pytest
 
 from swiftagentx import (
-    Agent,
     AdminService,
+    Agent,
     DummyModelClient,
-    Document,
     MemoryKnowledgeBase,
 )
-
 
 # ---- fixtures ----
 

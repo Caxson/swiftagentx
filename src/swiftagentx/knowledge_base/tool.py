@@ -2,7 +2,7 @@
 KnowledgeBaseTool — wraps a KnowledgeBase as a Tool for agent use.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 from ..tools.base import AgentContext, Tool, ToolOutput, ToolOutputType
 from .base import KnowledgeBase
@@ -62,7 +62,7 @@ class KnowledgeBaseTool(Tool):
             metadata={"result_count": len(results)},
         )
 
-    def get_schema(self) -> Dict[str, Any]:
+    def get_schema(self) -> dict[str, Any]:
         schema = super().get_schema()
         schema["parameters"] = {
             "type": "object",

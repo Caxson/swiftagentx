@@ -3,7 +3,8 @@ SwiftAgent framework configuration model.
 """
 
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -49,7 +50,7 @@ class SwiftAgentConfig(BaseModel):
     kb_exact_match_threshold: float = 0.95
 
     # Custom settings (extensible)
-    extra: Dict[str, Any] = Field(default_factory=dict)
+    extra: dict[str, Any] = Field(default_factory=dict)
 
     def get(self, key: str, default: Any = None) -> Any:
         if hasattr(self, key):

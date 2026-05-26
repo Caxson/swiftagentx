@@ -2,11 +2,16 @@
 Tests for the core Agent class.
 """
 
+
 import pytest
-import asyncio
+
 from swiftagentx import (
-    Agent, DummyModelClient, Tool, ToolOutput,
-    AgentRequest, SSEStreamAdapter,
+    Agent,
+    AgentRequest,
+    DummyModelClient,
+    SSEStreamAdapter,
+    Tool,
+    ToolOutput,
 )
 
 

@@ -7,10 +7,11 @@ Three intent levels:
 - DIRECT: Simple queries that can be answered directly by the LLM
 """
 
-from enum import Enum
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel
 import logging
+from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel
 
 from .model_client import ModelClient, ModelResponse
 
@@ -27,10 +28,10 @@ class IntentLevel(Enum):
 class IntentResult(BaseModel):
     """Result of intent classification."""
     level: IntentLevel
-    scenario: Optional[str] = None
+    scenario: str | None = None
     confidence: float = 0.0
     raw_output: str = ""
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -43,7 +44,7 @@ class IntentRouter:
     then route to the appropriate execution path.
     """
 
-    def __init__(self, scenarios: Optional[Dict[str, Any]] = None):
+    def __init__(self, scenarios: dict[str, Any] | None = None):
         self._scenarios = scenarios or {}
         self._classification_prompt_template = (
             "Classify the user's intent into one of three levels:\n"
@@ -59,15 +60,15 @@ class IntentRouter:
         """Override the default classification prompt template."""
         self._classification_prompt_template = template
 
-    def register_scenarios(self, scenarios: Dict[str, Any]) -> None:
+    def register_scenarios(self, scenarios: dict[str, Any]) -> None:
         """Register scenario names for classification."""
         self._scenarios.update(scenarios)
 
     async def classify(
         self,
         user_input: str,
-        context: Optional[Dict[str, Any]] = None,
-        model: Optional[ModelClient] = None,
+        context: dict[str, Any] | None = None,
+        model: ModelClient | None = None,
     ) -> IntentResult:
         """
         Classify user intent using the provided model.

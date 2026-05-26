@@ -4,9 +4,10 @@ Tool executor — executes tools with retry, timeout, and exponential backoff.
 
 import asyncio
 import json
-from typing import Any, List, Optional
 import logging
-from .base import Tool, ToolOutput, AgentContext
+from typing import Any
+
+from .base import AgentContext, ToolOutput
 from .registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -25,8 +26,8 @@ class ToolExecutor:
         self,
         tool_name: str,
         context: AgentContext,
-        timeout_override: Optional[float] = None,
-        max_retries_override: Optional[int] = None,
+        timeout_override: float | None = None,
+        max_retries_override: int | None = None,
         **tool_input: Any,
     ) -> ToolOutput:
         tool = self.registry.get(tool_name)
@@ -72,7 +73,7 @@ class ToolExecutor:
         )
 
     async def execute_multiple(
-        self, tools_input: List[dict], context: AgentContext, parallel: bool = False
+        self, tools_input: list[dict], context: AgentContext, parallel: bool = False
     ) -> list:
         if parallel:
             tasks = [
@@ -92,7 +93,7 @@ class ToolExecutor:
                 results.append(result)
             return results
 
-    def get_available_tools(self) -> List[str]:
+    def get_available_tools(self) -> list[str]:
         return self.registry.list_tools()
 
     def get_tool_schemas(self) -> dict:

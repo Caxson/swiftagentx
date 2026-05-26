@@ -2,9 +2,10 @@
 Model client — abstract interface for LLM interaction.
 """
 
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, AsyncGenerator
 import logging
+from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ class ModelResponse:
         content: str,
         model: str,
         tokens_used: int = 0,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ):
         self.content = content
         self.model = model
@@ -58,7 +59,7 @@ class ModelClient(ABC):
         ...
 
     @abstractmethod
-    async def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> ModelResponse:
+    async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> ModelResponse:
         """Call the model's chat interface."""
         ...
 
@@ -68,7 +69,7 @@ class ModelClient(ABC):
         ...
 
     @abstractmethod
-    async def stream_chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> AsyncGenerator[str, None]:
+    async def stream_chat(self, messages: list[dict[str, str]], **kwargs: Any) -> AsyncGenerator[str, None]:
         """Stream a chat response from the model."""
         ...
 
@@ -87,7 +88,7 @@ class DummyModelClient(ModelClient):
             tokens_used=100,
         )
 
-    async def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> ModelResponse:
+    async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> ModelResponse:
         last_message = messages[-1]["content"] if messages else ""
         return ModelResponse(
             content=f"[Dummy response] Reply to: {last_message[:50]}...",
@@ -99,7 +100,7 @@ class DummyModelClient(ModelClient):
         for word in ["This", " is", " a", " dummy", " response"]:
             yield word
 
-    async def stream_chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> AsyncGenerator[str, None]:
+    async def stream_chat(self, messages: list[dict[str, str]], **kwargs: Any) -> AsyncGenerator[str, None]:
         for word in ["Dummy", " chat", " response"]:
             yield word
 
@@ -112,9 +113,9 @@ class ModelClientFactory:
     """
 
     def __init__(self) -> None:
-        self._client_classes: Dict[str, type] = {}
-        self._model_tiers: Dict[str, Dict[str, Any]] = {}
-        self._client_instances: Dict[str, ModelClient] = {}
+        self._client_classes: dict[str, type] = {}
+        self._model_tiers: dict[str, dict[str, Any]] = {}
+        self._client_instances: dict[str, ModelClient] = {}
 
     def register_client(self, provider: str, client_class: type) -> None:
         self._client_classes[provider] = client_class
@@ -126,8 +127,8 @@ class ModelClientFactory:
 
     def get_client(
         self,
-        provider: Optional[str] = None,
-        model_tier: Optional[str] = None,
+        provider: str | None = None,
+        model_tier: str | None = None,
         **config: Any,
     ) -> ModelClient:
         if model_tier:
@@ -163,10 +164,10 @@ class ModelClientFactory:
     def get_heavy_model(self, **config: Any) -> ModelClient:
         return self.get_client(model_tier="heavy", **config)
 
-    def list_providers(self) -> List[str]:
+    def list_providers(self) -> list[str]:
         return list(self._client_classes.keys())
 
-    def list_tiers(self) -> List[str]:
+    def list_tiers(self) -> list[str]:
         return list(self._model_tiers.keys())
 
     def clear_cache(self) -> None:

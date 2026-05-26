@@ -2,17 +2,17 @@
 Prompt template manager — manages agent prompt templates with YAML/JSON loading.
 """
 
-from typing import Dict, List, Optional
-from pathlib import Path
-import re
-import yaml
 import json
+import re
+from pathlib import Path
+
+import yaml
 
 
 class PromptTemplate:
     """A single prompt template with variable substitution."""
 
-    def __init__(self, name: str, template: str, variables: Optional[List[str]] = None):
+    def __init__(self, name: str, template: str, variables: list[str] | None = None):
         self.name = name
         self.template = template
         self.variables = variables or []
@@ -34,7 +34,7 @@ class PromptManager:
     """
 
     def __init__(self) -> None:
-        self.templates: Dict[str, PromptTemplate] = {}
+        self.templates: dict[str, PromptTemplate] = {}
         self._setup_default_prompts()
 
     def _setup_default_prompts(self) -> None:
@@ -86,14 +86,14 @@ class PromptManager:
             "Generate natural, friendly, and concise replies based on user input and relevant information.",
         )
 
-    def register(self, name: str, template: str, variables: Optional[List[str]] = None) -> PromptTemplate:
+    def register(self, name: str, template: str, variables: list[str] | None = None) -> PromptTemplate:
         if variables is None:
             variables = re.findall(r"\{(\w+)\}", template)
         prompt_template = PromptTemplate(name, template, variables)
         self.templates[name] = prompt_template
         return prompt_template
 
-    def get(self, name: str) -> Optional[PromptTemplate]:
+    def get(self, name: str) -> PromptTemplate | None:
         return self.templates.get(name)
 
     def render(self, template_name: str, **kwargs: str) -> str:
@@ -111,16 +111,16 @@ class PromptManager:
         except Exception:
             return default
 
-    def list_templates(self) -> List[str]:
+    def list_templates(self) -> list[str]:
         return list(self.templates.keys())
 
     def load_from_yaml(self, file_path: str) -> None:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         self._load_from_dict(data)
 
     def load_from_json(self, file_path: str) -> None:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
         self._load_from_dict(data)
 
@@ -132,7 +132,7 @@ class PromptManager:
             elif file_path.suffix == ".json":
                 self.load_from_json(str(file_path))
 
-    def _load_from_dict(self, data: Optional[dict]) -> None:
+    def _load_from_dict(self, data: dict | None) -> None:
         if not isinstance(data, dict):
             return
         for name, template in data.items():
@@ -147,7 +147,7 @@ class PromptManager:
             return template.template
         return "You are a helpful assistant."
 
-    def export(self) -> Dict[str, str]:
+    def export(self) -> dict[str, str]:
         return {name: t.template for name, t in self.templates.items()}
 
     def __len__(self) -> int:

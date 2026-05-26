@@ -3,6 +3,7 @@ Shared test fixtures for SwiftAgent tests.
 """
 
 import pytest
+
 from swiftagentx import Agent, DummyModelClient, Tool, ToolOutput
 
 

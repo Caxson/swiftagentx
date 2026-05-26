@@ -11,8 +11,8 @@ import json
 import logging
 import queue
 import threading
-import time
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from ..core.model_client import ModelClient, ModelResponse
 
@@ -47,7 +47,7 @@ class OpenAICompatibleProvider(ModelClient):
         )
         self.api_base = api_base.rstrip("/")
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -55,9 +55,9 @@ class OpenAICompatibleProvider(ModelClient):
 
     def _build_payload(
         self,
-        messages: List[Dict[str, str]],
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         stream: bool = False,
         **kwargs: Any,
     ) -> dict:
@@ -76,7 +76,7 @@ class OpenAICompatibleProvider(ModelClient):
         messages = [{"role": "user", "content": prompt}]
         return await self.chat(messages, **kwargs)
 
-    async def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> ModelResponse:
+    async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> ModelResponse:
         url = f"{self.api_base}/chat/completions"
         payload = self._build_payload(messages, **kwargs)
         headers = self._get_headers()
@@ -121,7 +121,7 @@ class OpenAICompatibleProvider(ModelClient):
         async for chunk in self.stream_chat(messages, **kwargs):
             yield chunk
 
-    async def stream_chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> AsyncGenerator[str, None]:
+    async def stream_chat(self, messages: list[dict[str, str]], **kwargs: Any) -> AsyncGenerator[str, None]:
         url = f"{self.api_base}/chat/completions"
         payload = self._build_payload(messages, stream=True, **kwargs)
         headers = self._get_headers()

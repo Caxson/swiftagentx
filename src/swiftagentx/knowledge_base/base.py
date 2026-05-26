@@ -3,7 +3,6 @@ KnowledgeBase abstract base class.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
 
 from .document import Document, SearchResult
 
@@ -17,7 +16,7 @@ class KnowledgeBase(ABC):
     """
 
     @abstractmethod
-    async def search(self, query: str, top_k: int = 5) -> List[SearchResult]:
+    async def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
         """
         Search the knowledge base.
 
@@ -31,7 +30,7 @@ class KnowledgeBase(ABC):
         ...
 
     @abstractmethod
-    async def add_documents(self, documents: List[Document]) -> int:
+    async def add_documents(self, documents: list[Document]) -> int:
         """
         Add documents to the knowledge base.
 
@@ -56,7 +55,7 @@ class KnowledgeBase(ABC):
         """
         ...
 
-    async def get_document(self, doc_id: str) -> Optional[Document]:
+    async def get_document(self, doc_id: str) -> Document | None:
         """Get a document by ID. Override for optimized implementations."""
         return None
 

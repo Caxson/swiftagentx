@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 def create_flask_admin_blueprint(
-    service: "AdminService",
+    service: AdminService,
     url_prefix: str = "/admin",
 ):
     """
