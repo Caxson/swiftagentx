@@ -34,6 +34,7 @@ from .core.memory_layers import (
     MemoryBackend,
     MemorySnapshot,
 )
+from .providers.mcp import MCPClient, MCPClientError, MCPServerSpec, MCPTool
 from .core.model_client import DummyModelClient, ModelClient, ModelClientFactory, ModelResponse
 from .core.pipeline import PipelineStage, RequestPipeline, StageResult
 from .core.prompt import PromptManager, PromptTemplate
@@ -70,6 +71,8 @@ __all__ = [
     "Hook", "SemanticHook", "PythonHook", "LLMHook", "ShellHook",
     "HookEvent", "HookContext", "HookResult", "HookRegistry",
     "TopicChangeHook",
+    # v0.3 MCP
+    "MCPClient", "MCPClientError", "MCPServerSpec", "MCPTool",
     "CacheManager",
     "PromptManager", "PromptTemplate",
     "IntentLevel", "IntentResult", "IntentRouter",

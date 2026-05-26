@@ -126,6 +126,10 @@ class Agent:
         if self.config.memory_enable_topic_change_hook:
             self.hooks.register(TopicChangeHook())
 
+        # MCP clients spun up via register_mcp_server() (kept alive here so
+        # they aren't GC'd until shutdown_mcp_servers()).
+        self._mcp_clients: dict[str, list[Any]] = {}
+
     # --- Model access ---
 
     def get_model(self, tier: ModelTier = ModelTier.HEAVY) -> ModelClient:
@@ -200,6 +204,92 @@ class Agent:
 
     def register_tool(self, tool: Tool) -> None:
         self.tool_registry.register(tool)
+
+    # ------------------------------------------------------------------
+    # MCP server integration
+    # ------------------------------------------------------------------
+
+    async def register_mcp_server(
+        self,
+        name: str,
+        *,
+        transport: str = "stdio",
+        command: list[str] | None = None,
+        url: str | None = None,
+        env: dict[str, str] | None = None,
+        initialize_timeout: float = 10.0,
+        call_timeout: float = 30.0,
+    ) -> list[str]:
+        """
+        Bring up an MCP server, discover its tools, and register them.
+
+        The returned list contains the namespaced tool names (
+        ``{name}.{tool}``) that are now in the agent's tool registry.
+        Scenarios and the ReAct loop can use them transparently.
+
+        Args:
+            name: Server identifier; becomes the namespace prefix for
+                tool names (``"postgres"`` → ``"postgres.query"``).
+            transport: ``"stdio"`` (subprocess) or ``"sse"`` (HTTP+SSE).
+            command: Argv for stdio transport. Required when
+                ``transport="stdio"``.
+            url: Base URL for sse transport.
+            env: Extra env vars for stdio subprocess.
+            initialize_timeout: Seconds to wait for the MCP handshake.
+            call_timeout: Default per-call timeout for ``tools/call``.
+
+        Returns:
+            List of registered (namespaced) tool names.
+
+        Raises:
+            MCPClientError: server unavailable, command missing, handshake
+                timed out, or transport not supported.
+        """
+        from ..providers.mcp import MCPClient, MCPServerSpec, MCPTool  # type: ignore
+
+        spec = MCPServerSpec(
+            name=name,
+            transport=transport,  # type: ignore[arg-type]
+            command=command or [],
+            url=url,
+            env=env or {},
+            initialize_timeout=initialize_timeout,
+            call_timeout=call_timeout,
+        )
+
+        client = MCPClient(spec)
+        await client.start()
+        try:
+            descriptors = await client.list_tools()
+        except Exception:
+            await client.close()
+            raise
+
+        registered: list[str] = []
+        for descriptor in descriptors:
+            tool = MCPTool(client=client, descriptor=descriptor)
+            # Idempotent: replace if a tool with the same qualified name exists.
+            self.tool_registry.unregister(tool.name)
+            self.tool_registry.register(tool)
+            registered.append(tool.name)
+
+        # Keep the client alive on the agent so it's not GC'd; track for shutdown.
+        self._mcp_clients.setdefault(name, []).append(client)
+        logger.info(
+            "Registered %d tools from MCP server %s: %s",
+            len(registered), name, registered,
+        )
+        return registered
+
+    async def shutdown_mcp_servers(self) -> None:
+        """Close every MCP client the agent has spun up."""
+        for name, clients in list(self._mcp_clients.items()):
+            for client in clients:
+                try:
+                    await client.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Closing MCP %s raised %s", name, exc)
+        self._mcp_clients.clear()
 
     # ------------------------------------------------------------------
     # Hook dispatch helpers
