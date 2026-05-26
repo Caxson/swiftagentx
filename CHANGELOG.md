@@ -6,6 +6,100 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-26
+
+This release brings the framework into the 2026 generation of agent patterns
+(memory, hooks, MCP, sub-agents, skills) while keeping **Scenarios as the
+headline abstraction**. Every new subsystem is a building block a Scenario
+or ReAct iteration can use — Scenarios are not replaced.
+
+### Added
+
+- **4-layer Memory** (`LayeredMemory`, `LayeredMemoryStore`) — L1 current
+  question / L2 last-4-turns verbatim / L3 reference window / L4 incremental
+  rolling summary. Cadence-based (every N turns) and semantic-hook-triggered
+  summarization paths both exist. Pluggable `MemoryBackend`; ships with
+  `InMemoryBackend` (production-ready future: Redis backend).
+- **Hook system** (`HookRegistry`, `HookEvent`) — 12 lifecycle events and
+  4 semantic events with four handler kinds (`PythonHook`, `LLMHook`,
+  `ShellHook`, semantic hooks). The v0.2 subclass-override pattern still
+  works alongside.
+- **`TopicChangeHook`** — built-in semantic hook that asks the LIGHT model
+  whether the current input starts a new topic; on detection, calls
+  `memory.summarize()` so the layered memory stays coherent across topic
+  switches. Auto-registered; opt-out via config.
+- **MCP server support** (`Agent.register_mcp_server`, `MCPClient`,
+  `MCPTool`) — Scenarios and ReAct can call any Model Context Protocol
+  server's tools by name. Stdio + SSE transports.
+- **Sub-agent dispatch** (`SubAgentRole`, `Agent.dispatch_subagents`) —
+  parallel focused agents with isolated context, structured results, and
+  one-failed-doesn't-break-others fan-out.
+- **Skill-in-ReAct** (`Skill`, `Agent.invoke_skill`, `Agent.load_skills`) —
+  markdown-defined workflows the ReAct loop can invoke. Complement to
+  Scenarios; not a replacement.
+- **Session workspace** (`Workspace`, `Agent.workspace`) — per-session file
+  sandbox with `LocalDiskWorkspaceBackend` + `InMemoryWorkspaceBackend`,
+  path-escape protection, optional cleanup-on-exit.
+- **Cache-friendly prompt layout** (`PromptLayout`) — assembles prompts in
+  least-changing → most-changing order (tools → system → L4 → L3 → L2 → L1)
+  for Anthropic/OpenAI prompt-cache friendliness.
+- **Lazy tool loading** (`ToolRegistry.select_tools_for_query`,
+  `schemas_for_query`) — when a registry exceeds a threshold, score tools
+  against the query and return only the top-K. Important when many MCP
+  servers contribute hundreds of tools.
+- **Real-LLM benchmark runner** (`benchmarks/real_runner.py`) — exercises
+  the four execution tiers against any OpenAI-compatible endpoint
+  (defaults to DashScope qwen-flash + qwen-turbo), emits JSON + matplotlib
+  chart. 30 iterations per scenario costs well under one yuan.
+- **`docs/architecture-v0.3.md`** — binding construction blueprint for the
+  release, including OUT-of-scope items (no permissions, slash commands,
+  CLI, output styles, dashboards).
+- README headline visual embeds the measured benchmark chart from
+  `docs/assets/v0.3-benchmark-qwen.png`.
+
+### Changed
+
+- `Agent.memory` is now a `LayeredMemoryStore` (per-session multiplexer)
+  instead of the singleton `SessionMemory` that pooled every session's
+  history together (latent v0.2 bug — sessions could see each other's
+  context). The standalone `SessionMemory` class itself is unchanged for
+  users who construct it directly.
+- `Agent.run()` / `Agent.run_stream()` now dispatch lifecycle hooks at
+  every boundary in addition to calling the subclass-override methods
+  (`on_request_start` etc.). The two paths are additive.
+- `_direct_response()` now injects layered memory into the chat prompt
+  via `mem.to_chat_messages(l2_rounds=5)` rather than the old
+  `get_conversation_for_reply`.
+- README test-suite count updated from 111 to 195. Tiered-execution table
+  replaced with measured P50/P95 numbers from the new benchmark runner.
+
+### Breaking changes
+
+- The undocumented patterns `agent.memory.add_message(...)` and
+  `agent.memory.get_conversation_for_reply(...)` no longer work on the
+  agent attribute (it's no longer a `SessionMemory`). Importing the
+  `SessionMemory` class directly from `swiftagentx.core.memory` still
+  works as before.
+
+### Numbers (measured, not aspirational)
+
+DashScope Qwen, 30 iterations per scenario, LIGHT=`qwen-flash`,
+HEAVY=`qwen-turbo`:
+
+| Tier               | P50    | P95    | LLM calls |
+|--------------------|-------:|-------:|----------:|
+| KB exact match     |   0 ms |   0 ms |         0 |
+| Scenario shortcut  | 517 ms | 802 ms |         1 |
+| Cache hit          |   0 ms |   0 ms |         0 |
+| Simple QA (DIRECT) |  1.4 s |  2.4 s |         2 |
+| ReAct complex      |  3.1 s |  4.0 s |         3 |
+
+Reproduce: `python benchmarks/real_runner.py --iterations 30`.
+
+### Tests
+
+105 (v0.2.0) → 195 (v0.3.0). Full suite runs in <0.5 s.
+
 ## [0.2.0] — 2026-05-25
 
 This release focuses on **production readiness, observability, and benchmark
@@ -88,6 +182,7 @@ Initial public release on PyPI.
 - Middleware chain with built-in `TracingMiddleware`.
 - 105 tests covering core, cache, KB, admin, tools, streaming.
 
-[Unreleased]: https://github.com/Caxson/swiftagentx/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Caxson/swiftagentx/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Caxson/swiftagentx/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Caxson/swiftagentx/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/Caxson/swiftagentx/releases/tag/v0.1.1
