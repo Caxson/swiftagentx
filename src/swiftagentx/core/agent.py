@@ -671,6 +671,21 @@ class Agent:
             # Record the completed turn (folds into L2; may fire summarize).
             await mem.add_turn(user_input, answer)
 
+            # Populate the L2 cache with this answer so the next identical
+            # (user_input, user_id, platform) request inside the TTL window
+            # short-circuits at the cache.query() check at the top of run().
+            # Prior to this commit, CacheManager.set_level_2 / set_scenario_cache
+            # / set_level_1 / set_level_3 were declared and tested as classes
+            # but the agent never WROTE to any of them — so cache.query()
+            # always returned (False, None, "") and the "three-level cache"
+            # headline of v0.3 was effectively a no-op.
+            if self.config.enable_cache:
+                self.cache.set_level_2(
+                    user_input, user_id, answer,
+                    ttl_seconds=self.config.code_cache_ttl,
+                    platform=context_vars.get("platform", "default"),
+                )
+
             elapsed_ms = (time.time() - start_time) * 1000
             response = AgentResponse(
                 session_id=session_id,
@@ -678,7 +693,11 @@ class Agent:
                 answer=answer,
                 total_iterations=context.current_iteration,
                 execution_time_ms=elapsed_ms,
-                metadata={"intent_level": intent.level.value, "scenario": intent.scenario},
+                metadata={
+                    "intent_level": intent.level.value,
+                    "scenario": intent.scenario,
+                    "cached_for_next": self.config.enable_cache,
+                },
             )
 
             await self.on_request_end(context, response)
@@ -692,15 +711,16 @@ class Agent:
         except Exception as e:
             logger.error(f"Agent run failed: {e}", exc_info=True)
             elapsed_ms = (time.time() - start_time) * 1000
-            # Even in non-debug mode, surface the exception class + a short
-            # message so callers can branch on it without seeing a full
-            # traceback. Full traceback only when debug=True.
+            # debug=False (production default): expose only the exception
+            # CLASS so callers can branch on the failure mode without
+            # leaking the raw message — which might contain secrets
+            # (DB URLs, API keys, etc.). debug=True: full message + traceback.
             metadata: dict[str, Any] = {
                 "error_class": type(e).__name__,
-                "error_message": str(e)[:240],
             }
             if self.config.debug:
                 import traceback as _tb
+                metadata["error_message"] = str(e)[:240]
                 metadata["traceback"] = _tb.format_exc()
                 metadata["error"] = str(e)
             return AgentResponse(
@@ -828,13 +848,23 @@ class Agent:
             await adapter.finish()
 
             await mem.add_turn(request.user_input, answer)
+            if self.config.enable_cache:
+                self.cache.set_level_2(
+                    request.user_input, request.user_id, answer,
+                    ttl_seconds=self.config.code_cache_ttl,
+                    platform=request.platform,
+                )
             elapsed_ms = (time.time() - start_time) * 1000
 
             response = AgentResponse(
                 session_id=request.session_id, request_id=request_id,
                 answer=answer, total_iterations=context.current_iteration,
                 execution_time_ms=elapsed_ms,
-                metadata={"intent_level": intent.level.value, "scenario": intent.scenario},
+                metadata={
+                    "intent_level": intent.level.value,
+                    "scenario": intent.scenario,
+                    "cached_for_next": self.config.enable_cache,
+                },
             )
             await self.on_request_end(context, response)
             await self._dispatch_hook(
@@ -847,14 +877,21 @@ class Agent:
         except Exception as e:
             logger.error(f"Agent stream run failed: {e}", exc_info=True)
             error_msg = self._sanitize_error(e)
-            await adapter.send_event(SSEEventBuilder.error(error_msg))
-            await adapter.finish()
+            # See note in run(): debug=False must NOT leak the raw exception
+            # message — it can contain secrets the framework didn't sanitise.
+            try:
+                await adapter.send_event(SSEEventBuilder.error(error_msg))
+                await adapter.finish()
+            except Exception:
+                # Adapter may be already closed (e.g. client disconnected) —
+                # don't let that mask the real error.
+                pass
             metadata: dict[str, Any] = {
                 "error_class": type(e).__name__,
-                "error_message": str(e)[:240],
             }
             if self.config.debug:
                 import traceback as _tb
+                metadata["error_message"] = str(e)[:240]
                 metadata["traceback"] = _tb.format_exc()
                 metadata["error"] = str(e)
             return AgentResponse(
@@ -913,7 +950,20 @@ class Agent:
         accumulated_context = ""
         answer = ""
 
+        # Per-loop helper for dispatching iteration-scoped hooks.
+        async def _dispatch_iter(event: HookEvent, **extra: Any) -> None:
+            mem = await self.memory.get(context.session_id, context.user_id)
+            await self._dispatch_hook(
+                event,
+                user_input=context.user_input,
+                session_id=context.session_id,
+                user_id=context.user_id,
+                memory=mem,
+                **extra,
+            )
+
         for iteration in range(self.max_iterations):
+            await _dispatch_iter(HookEvent.BEFORE_REACT_ITER, react_iteration=iteration + 1)
             context.current_iteration = iteration + 1
 
             if adapter:
@@ -967,8 +1017,18 @@ class Agent:
                     await adapter.send_event(SSEEventBuilder.action_start(tool_name, iteration + 1))
 
                 await self.on_before_tool_call(context, tool_name, tool_params)
+                await _dispatch_iter(
+                    HookEvent.BEFORE_TOOL_CALL,
+                    tool_name=tool_name, tool_args=tool_params,
+                    react_iteration=iteration + 1,
+                )
                 result = await self.tool_executor.execute(tool_name, context, **tool_params)
                 await self.on_after_tool_call(context, tool_name, result)
+                await _dispatch_iter(
+                    HookEvent.AFTER_TOOL_CALL,
+                    tool_name=tool_name, tool_args=tool_params,
+                    tool_result=result, react_iteration=iteration + 1,
+                )
 
                 observation = str(result.result) if result.success else f"Error: {result.error}"
                 accumulated_context += f"\nTool: {tool_name}\nResult: {observation}\n"
@@ -989,7 +1049,10 @@ class Agent:
                 # No action — extract answer from thought
                 answer = self._extract_final_answer(thought)
                 if answer:
+                    await _dispatch_iter(HookEvent.AFTER_REACT_ITER, react_iteration=iteration + 1)
                     return answer
+
+            await _dispatch_iter(HookEvent.AFTER_REACT_ITER, react_iteration=iteration + 1)
 
         # Generate final answer from accumulated context
         return await self._generate_final_answer(context, model, accumulated_context)
@@ -1070,7 +1133,28 @@ class Agent:
         a step like ``ToolChainStep(tool="weather", query_template="$city")``
         actually substitutes the city the caller passed. Reserved keys
         (user_id / user_input / session_id) are merged on top.
+
+        We also wire the engine's per-step callback to dispatch
+        ``HookEvent.BEFORE_SCENARIO_STEP`` / ``AFTER_SCENARIO_STEP`` so
+        registered hooks fire per-step.
         """
+        async def _on_step(phase: str, step: Any, tool_kwargs: dict[str, Any],
+                           output: Any) -> None:
+            event = (HookEvent.BEFORE_SCENARIO_STEP if phase == "before"
+                     else HookEvent.AFTER_SCENARIO_STEP)
+            mem = await self.memory.get(context.session_id, context.user_id)
+            await self._dispatch_hook(
+                event,
+                user_input=context.user_input,
+                session_id=context.session_id,
+                user_id=context.user_id,
+                memory=mem,
+                scenario=scenario_id,
+                tool_name=step.tool,
+                tool_args=dict(tool_kwargs),
+                tool_result=output,
+            )
+
         result = await self.scenario_engine.execute(
             scenario_id, context, self.tool_executor,
             extra_vars={
@@ -1079,6 +1163,7 @@ class Agent:
                 "user_input": context.user_input,
                 "session_id": context.session_id,
             },
+            step_callback=_on_step,
         )
 
         if result.success:

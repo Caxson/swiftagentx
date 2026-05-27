@@ -96,10 +96,13 @@ async def test_error_metadata_includes_class_in_non_debug_mode() -> None:
     response = await agent.run("trigger")
     # User-facing answer is still the sanitized message.
     assert "internal error" in response.answer.lower()
-    # But metadata now surfaces what blew up.
+    # debug=False: only error_class for branching; NO raw error_message
+    # (it can contain secrets) and NO traceback.
     assert response.metadata.get("error_class") == "RuntimeError"
-    assert "kaboom" in (response.metadata.get("error_message") or "")
-    # No traceback when debug=False.
+    assert "error_message" not in response.metadata, (
+        "debug=False must NOT leak the raw exception message to metadata — "
+        "it may contain DB URLs, API keys, or other secrets."
+    )
     assert "traceback" not in response.metadata
 
 
@@ -425,3 +428,170 @@ def test_fastapi_admin_router_mounts_at_user_prefix() -> None:
     # Wrong (legacy double-prefix) path returns 404.
     r2 = client.get("/admin/admin/status")
     assert r2.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Contract test — every lifecycle HookEvent must be dispatched somewhere
+# in run() or run_stream(). This stops the recurring "declared but
+# never wired" pattern (pipeline → middleware → tool/scenario/react hooks).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_every_lifecycle_hook_event_fires_at_least_once() -> None:
+    """For every HookEvent.lifecycle_events(), assert that registering a
+    hook on it and running a request that takes the ReAct + Scenario
+    branches actually invokes the handler.
+
+    The previous bug: BEFORE_TOOL_CALL / AFTER_TOOL_CALL /
+    BEFORE_SCENARIO_STEP / AFTER_SCENARIO_STEP / BEFORE_REACT_ITER /
+    AFTER_REACT_ITER were in the enum but no agent code dispatched them.
+    """
+    from swiftagentx import (
+        HookContext,
+        HookEvent,
+        HookResult,
+        PythonHook,
+        ScenarioConfig,
+        Tool,
+        ToolChainStep,
+        ToolOutput,
+    )
+
+    fired: set[HookEvent] = set()
+
+    async def handler(ctx: HookContext) -> HookResult:
+        fired.add(ctx.event)
+        return HookResult()
+
+    # ReAct path agent — forces REACT level, proposes a tool call, then a
+    # final answer (so the ReAct iter & tool hooks all fire).
+    class _ReActStubAgent(Agent):
+        _step = 0
+
+        async def _classify_intent(self, user_input: str, context: Any):  # type: ignore[override]
+            from swiftagentx.core.router import IntentLevel, IntentResult
+            return IntentResult(level=IntentLevel.REACT, confidence=1.0)
+
+        async def _generate_thought(self, context: Any, model: Any, accumulated: str) -> str:  # type: ignore[override]
+            _ReActStubAgent._step += 1
+            if _ReActStubAgent._step == 1:
+                return 'Thought: I need a tool.\nAction: ping\nAction Input: {"q": "1"}'
+            return "Final Answer: done"
+
+    class _PingTool(Tool):
+        def __init__(self) -> None:
+            super().__init__(name="ping", description="ping back")
+
+        async def execute(self, context: Any, **kwargs: Any) -> ToolOutput:
+            return ToolOutput(success=True, result="pong")
+
+    agent_react = _ReActStubAgent(
+        model=DummyModelClient(api_key="k", model="d"),
+        config=SwiftAgentConfig(memory_enable_topic_change_hook=False,
+                                enable_cache=False, max_iterations=4),
+    )
+    agent_react.tool_registry.register(_PingTool())
+
+    # Register one hook for every lifecycle event.
+    for event in HookEvent.lifecycle_events():
+        agent_react.hooks.register(PythonHook(
+            name=f"watch-{event.value}", events={event}, handler=handler,
+        ))
+
+    await agent_react.run("anything to trigger react")
+
+    react_events = {
+        HookEvent.SESSION_START, HookEvent.REQUEST_START,
+        HookEvent.BEFORE_CLASSIFY, HookEvent.AFTER_CLASSIFY,
+        HookEvent.BEFORE_REACT_ITER, HookEvent.AFTER_REACT_ITER,
+        HookEvent.BEFORE_TOOL_CALL, HookEvent.AFTER_TOOL_CALL,
+        HookEvent.BEFORE_RESPOND, HookEvent.REQUEST_END,
+    }
+    missing_react = react_events - fired
+    assert not missing_react, (
+        f"ReAct path did not dispatch these lifecycle events: {missing_react}. "
+        f"All declared HookEvent.lifecycle_events() must fire when a real "
+        f"request takes the relevant code path."
+    )
+
+    # Scenario path agent — forces SCENARIO level for the BEFORE/AFTER_SCENARIO_STEP events.
+    class _ScenarioStubAgent(Agent):
+        async def _classify_intent(self, user_input: str, context: Any):  # type: ignore[override]
+            from swiftagentx.core.router import IntentLevel, IntentResult
+            return IntentResult(level=IntentLevel.SCENARIO, scenario="weather", confidence=1.0)
+
+    fired.clear()
+    agent_scn = _ScenarioStubAgent(
+        model=DummyModelClient(api_key="k", model="d"),
+        config=SwiftAgentConfig(memory_enable_topic_change_hook=False,
+                                enable_cache=False),
+    )
+    agent_scn.tool_registry.register(_PingTool())
+    agent_scn.register_scenario("weather", ScenarioConfig(
+        name="w", description="", triggers=["weather"],
+        tool_chain=[ToolChainStep(tool="ping", query_template="x")],
+        cache_ttl=60, output_type="direct",
+    ))
+    for event in HookEvent.lifecycle_events():
+        agent_scn.hooks.register(PythonHook(
+            name=f"watch-{event.value}", events={event}, handler=handler,
+        ))
+
+    await agent_scn.run("anything to trigger scenario")
+    assert HookEvent.BEFORE_SCENARIO_STEP in fired, "BEFORE_SCENARIO_STEP never fired"
+    assert HookEvent.AFTER_SCENARIO_STEP in fired, "AFTER_SCENARIO_STEP never fired"
+
+
+# ---------------------------------------------------------------------------
+# Friction #11 (this round) — ScenarioEngine supports multi-kwarg tools
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scenario_kwargs_template_for_multi_param_tool() -> None:
+    """An MCP-style tool taking multiple kwargs (a, b) should be drivable
+    from a Scenario via `kwargs_template={"a": "$x", "b": "$y"}`."""
+    from swiftagentx import (
+        ScenarioConfig, Tool, ToolChainStep, ToolOutput,
+    )
+
+    captured: list[dict[str, Any]] = []
+
+    class _AddTool(Tool):
+        def __init__(self) -> None:
+            super().__init__(name="add", description="add a + b")
+
+        async def execute(self, context: Any, **kwargs: Any) -> ToolOutput:
+            captured.append(dict(kwargs))
+            try:
+                total = int(kwargs["a"]) + int(kwargs["b"])
+            except Exception as exc:
+                return ToolOutput(success=False, result=None, error=str(exc))
+            return ToolOutput(success=True, result=str(total))
+
+    class _ForceScenario(Agent):
+        async def _classify_intent(self, user_input: str, context: Any):  # type: ignore[override]
+            from swiftagentx.core.router import IntentLevel, IntentResult
+            return IntentResult(level=IntentLevel.SCENARIO, scenario="math",
+                                confidence=1.0)
+
+    agent = _ForceScenario(
+        model=DummyModelClient(api_key="k", model="d"),
+        config=SwiftAgentConfig(memory_enable_topic_change_hook=False,
+                                enable_cache=False),
+    )
+    agent.tool_registry.register(_AddTool())
+    agent.register_scenario("math", ScenarioConfig(
+        name="math", description="", triggers=["sum"],
+        tool_chain=[ToolChainStep(
+            tool="add",
+            kwargs_template={"a": "$lhs", "b": "$rhs"},
+        )],
+        cache_ttl=60,
+        output_type="direct",
+    ))
+
+    response = await agent.run("compute the sum", lhs="3", rhs="4")
+    assert captured == [{"a": "3", "b": "4"}], f"got {captured}"
+    assert "7" in response.answer

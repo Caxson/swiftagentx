@@ -18,11 +18,23 @@ logger = logging.getLogger(__name__)
 
 
 class ToolChainStep(BaseModel):
-    """A single step in a scenario tool chain."""
+    """A single step in a scenario tool chain.
+
+    Two ways to populate the tool's kwargs from the scenario's variable bag:
+
+    - ``query_template``: a single ``$foo`` Template string. The result is
+      passed as the ``query`` kwarg. Legacy / single-arg tools.
+    - ``kwargs_template``: a dict of ``{kwarg_name: $foo Template}``. Used
+      by multi-parameter tools — including MCP tools whose schema is
+      ``add(a, b)``-shaped rather than ``tool(query=...)``-shaped.
+
+    Pick one. ``kwargs_template`` wins if both are set.
+    """
     tool: str
     extract_to: str = ""
     condition: str = "always"
     query_template: str = ""
+    kwargs_template: dict[str, str] = Field(default_factory=dict)
 
 
 class ScenarioConfig(BaseModel):
@@ -100,6 +112,7 @@ class ScenarioEngine:
         context: AgentContext,
         tool_executor: ToolExecutor,
         extra_vars: dict[str, Any] | None = None,
+        step_callback: Callable[..., Any] | None = None,
     ) -> ToolOutput:
         """
         Execute a scenario's tool chain.
@@ -109,6 +122,13 @@ class ScenarioEngine:
             context: Agent execution context
             tool_executor: Tool executor instance
             extra_vars: Additional variables for query template rendering
+            step_callback: Optional async callback invoked before and after
+                each step. Signature: ``async def cb(phase: str, step: ToolChainStep,
+                tool_kwargs: dict, output: ToolOutput | None) -> None``.
+                ``phase`` is ``"before"`` or ``"after"``; ``output`` is
+                ``None`` for the "before" call and the step's result for
+                "after". Used by ``Agent._execute_scenario`` to dispatch
+                ``HookEvent.BEFORE_SCENARIO_STEP`` / ``AFTER_SCENARIO_STEP``.
 
         Returns:
             Combined ToolOutput from the chain
@@ -132,13 +152,27 @@ class ScenarioEngine:
             if step.condition == "never":
                 continue
 
-            # Build tool input
+            # Build tool input. Prefer the new dict-shaped kwargs_template
+            # (each value is a $foo Template) so multi-parameter tools —
+            # including most MCP tools whose schema is shaped like
+            # add(a, b) rather than tool(query) — work inside a Scenario
+            # chain. Fall back to the legacy single-"query" query_template
+            # for back compatibility.
             tool_kwargs: dict[str, Any] = {}
-            if step.query_template:
+            if step.kwargs_template:
+                for key, tmpl in step.kwargs_template.items():
+                    try:
+                        tool_kwargs[key] = Template(tmpl).safe_substitute(collected)
+                    except (KeyError, ValueError):
+                        tool_kwargs[key] = tmpl
+            elif step.query_template:
                 try:
                     tool_kwargs["query"] = Template(step.query_template).safe_substitute(collected)
                 except (KeyError, ValueError):
                     tool_kwargs["query"] = step.query_template
+
+            if step_callback is not None:
+                await step_callback("before", step, tool_kwargs, None)
 
             # Execute tool
             output = await tool_executor.execute(step.tool, context, **tool_kwargs)
@@ -147,6 +181,9 @@ class ScenarioEngine:
                 collected[step.extract_to] = output.result
 
             last_output = output
+
+            if step_callback is not None:
+                await step_callback("after", step, tool_kwargs, output)
 
             if not output.success:
                 logger.warning(f"Scenario '{scenario_id}' step '{step.tool}' failed: {output.error}")
