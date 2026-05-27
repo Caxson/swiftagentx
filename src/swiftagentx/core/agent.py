@@ -489,11 +489,66 @@ class Agent:
         session_id = context_vars.get("session_id") or self._default_session_id
         user_id = context_vars.get("user_id", "anonymous")
 
+        # If any user-registered middleware exists, wrap the rest of run()
+        # inside the chain so middlewares can log before/after, mutate the
+        # request, or short-circuit. The chain calls _inner_run() as the
+        # innermost handler. (Dogfood Friction #9: prior to v0.3.x the
+        # middleware chain was constructed and `agent.use()` appended into
+        # it, but Agent.run() never executed the chain.)
+        if self._middleware_chain._middlewares:
+            mw_ctx: dict[str, Any] = {
+                "request_id": request_id,
+                "session_id": session_id,
+                "user_id": user_id,
+                "user_input": user_input,
+                **context_vars,
+            }
+
+            async def _inner_handler(_ctx: dict[str, Any]) -> dict[str, Any]:
+                resp = await self._run_internal(
+                    user_input=user_input, request_id=request_id,
+                    start_time=start_time, session_id=session_id,
+                    user_id=user_id, context_vars=context_vars,
+                )
+                _ctx["response"] = resp
+                return _ctx
+
+            final_ctx = await self._middleware_chain.execute(mw_ctx, inner=_inner_handler)
+            return final_ctx["response"]
+
+        return await self._run_internal(
+            user_input=user_input, request_id=request_id,
+            start_time=start_time, session_id=session_id,
+            user_id=user_id, context_vars=context_vars,
+        )
+
+    async def _run_internal(
+        self,
+        *,
+        user_input: str,
+        request_id: str,
+        start_time: float,
+        session_id: str,
+        user_id: str,
+        context_vars: dict[str, Any],
+    ) -> AgentResponse:
+        """Internal body of run() that the middleware chain wraps."""
+
+        # Anything the caller passed as a non-reserved kwarg becomes a
+        # context variable so Scenario tool_chain's $foo templates and
+        # tools that look at context.get(...) can see it. The reserved
+        # keys (session_id, user_id, platform) stay at the top level of
+        # context_vars and DON'T get duplicated into variables.
+        _reserved = {"session_id", "user_id", "platform"}
+        scenario_vars: dict[str, Any] = {
+            k: v for k, v in context_vars.items() if k not in _reserved
+        }
         context = SessionContext(
             session_id=session_id,
             user_id=user_id,
             user_input=user_input,
             max_iterations=self.max_iterations,
+            variables=scenario_vars,
         )
 
         # Acquire the per-session LayeredMemory (lazy-creates on first turn).
@@ -741,13 +796,21 @@ class Agent:
                 scenario=intent.scenario,
             )
 
-            # Execute
+            # Execute. Track whether the chosen path already streamed the
+            # answer to the adapter; if so, we must NOT re-emit it via
+            # _stream_answer or the client receives the answer twice
+            # (dogfood Friction #8).
+            answer_already_streamed = False
             if intent.level == IntentLevel.SCENARIO and intent.scenario:
                 answer = await self._execute_scenario(intent.scenario, context)
             elif intent.level == IntentLevel.REACT:
                 answer = await self._react_loop(context, adapter)
+                # _react_loop streams thoughts/actions/observations but
+                # currently does NOT stream the final answer token-by-token,
+                # so we still need _stream_answer to emit it.
             else:
                 answer = await self._direct_response(context, adapter)
+                answer_already_streamed = True  # _direct_response streamed chunks
 
             answer = await self.on_before_respond(context, answer)
             await self._dispatch_hook(
@@ -755,7 +818,12 @@ class Agent:
                 user_input=request.user_input, session_id=request.session_id,
                 user_id=request.user_id, memory=mem, answer=answer,
             )
-            await self._stream_answer(answer, adapter, request.session_id, request_id)
+            if answer_already_streamed:
+                # The chunks are already out; just close with answer_end so
+                # clients know the answer body is complete.
+                await adapter.send_event(SSEEventBuilder.answer_end(answer))
+            else:
+                await self._stream_answer(answer, adapter, request.session_id, request_id)
             await adapter.send_event(SSEEventBuilder.completed())
             await adapter.finish()
 
@@ -859,8 +927,14 @@ class Agent:
 
             context.add_step("THOUGHT", thought)
 
-            # Check termination
-            should_stop, reason = self.termination_checker.should_terminate(context, thought)
+            # Check termination. We enable check_repeated_actions by default
+            # so a ReAct loop that decides to call the same tool with the
+            # same args twice in a row stops instead of burning tokens for
+            # several more iterations (dogfood Friction #6).
+            should_stop, reason = self.termination_checker.should_terminate(
+                context, thought,
+                check_repeated_actions=True,
+            )
             if should_stop:
                 logger.info(f"ReAct loop terminated: {reason}")
                 break
@@ -869,6 +943,26 @@ class Agent:
             tool_name, tool_params = self._parse_action(thought)
 
             if tool_name:
+                # Skip executing an action we already executed earlier in
+                # this loop — the LLM has the observation already. Without
+                # this, models will gladly call the same tool with the same
+                # args 5-10 times before producing a final answer
+                # (dogfood Friction #6). We break the loop and let the
+                # caller synthesise the final answer from the last
+                # observation in accumulated_context.
+                proposed_action = f"{tool_name}({tool_params})"
+                prior_actions = [
+                    s.get("content", "") for s in context.steps
+                    if s.get("type") == "ACTION"
+                ]
+                if proposed_action in prior_actions:
+                    logger.info(
+                        "ReAct: refusing duplicate action %s; "
+                        "asking the model to finalise from existing observations.",
+                        proposed_action,
+                    )
+                    break
+
                 if adapter:
                     await adapter.send_event(SSEEventBuilder.action_start(tool_name, iteration + 1))
 
@@ -968,10 +1062,19 @@ class Agent:
         return response.content
 
     async def _execute_scenario(self, scenario_id: str, context: SessionContext) -> str:
-        """Execute a pre-defined scenario toolchain."""
+        """Execute a pre-defined scenario toolchain.
+
+        ``extra_vars`` is what the scenario engine substitutes into
+        ``ToolChainStep.query_template`` and uses to build cache keys.
+        It must include the caller's ``agent.run(..., **kwargs)`` so that
+        a step like ``ToolChainStep(tool="weather", query_template="$city")``
+        actually substitutes the city the caller passed. Reserved keys
+        (user_id / user_input / session_id) are merged on top.
+        """
         result = await self.scenario_engine.execute(
             scenario_id, context, self.tool_executor,
             extra_vars={
+                **dict(context.variables),
                 "user_id": context.user_id,
                 "user_input": context.user_input,
                 "session_id": context.session_id,

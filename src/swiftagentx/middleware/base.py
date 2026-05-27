@@ -48,10 +48,28 @@ class MiddlewareChain:
     def add(self, middleware: Middleware) -> None:
         self._middlewares.append(middleware)
 
-    async def execute(self, context: dict[str, Any]) -> dict[str, Any]:
-        """Execute the middleware chain."""
+    async def execute(
+        self,
+        context: dict[str, Any],
+        inner: Callable[[dict[str, Any]], Coroutine[Any, Any, dict[str, Any]]] | None = None,
+    ) -> dict[str, Any]:
+        """Execute the middleware chain, optionally with an inner handler.
+
+        Args:
+            context: Mutable request context passed to every middleware.
+            inner: Async callable that receives the post-middlewares context
+                and performs the framework's actual work. The innermost
+                ``next_handler`` invokes this. When ``None`` (the legacy
+                behavior), the innermost handler is identity — useful when
+                the chain is used as a pre-only or post-only filter.
+
+        Each middleware's ``process(ctx, next_handler)`` should call
+        ``await next_handler(ctx)`` exactly once to pass to the next
+        middleware (or the inner handler if it's the last). Returning
+        without calling ``next_handler`` short-circuits the request.
+        """
         if not self._middlewares:
-            return context
+            return await inner(context) if inner is not None else context
 
         index = 0
 
@@ -65,6 +83,9 @@ class MiddlewareChain:
                 except Exception as e:
                     logger.error(f"Middleware {mw.__class__.__name__} failed: {e}", exc_info=True)
                     raise
+            # Past the last middleware — invoke the inner handler.
+            if inner is not None:
+                return await inner(ctx)
             return ctx
 
         return await next_handler(context)

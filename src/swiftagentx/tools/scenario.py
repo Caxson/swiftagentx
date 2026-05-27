@@ -155,15 +155,27 @@ class ScenarioEngine:
         if last_output is None:
             return ToolOutput(success=True, result=collected, output_type=ToolOutputType.LLM_PROCESSED)
 
-        # Determine output type
+        # Determine output type + the value to return.
+        #
+        # For "direct" output: the user wants the raw tool result, period.
+        # For "llm_processed": if any step declared extract_to we hand the
+        # downstream LLM the structured ``collected`` dict; otherwise we
+        # still hand it the last tool's result. The previous logic ("use
+        # collected if truthy") returned the *initial* extra_vars dict
+        # (user_id / user_input / session_id) when no step used extract_to
+        # — that's the original Scenario-shortcut bug surfaced in
+        # dogfooding (Friction #7).
+        any_extracted = any(step.extract_to for step in scenario.tool_chain)
         if scenario.output_type == "direct":
             output_type = ToolOutputType.DIRECT_OUTPUT
+            result_value: Any = last_output.result
         else:
             output_type = ToolOutputType.LLM_PROCESSED
+            result_value = collected if any_extracted else last_output.result
 
         return ToolOutput(
             success=last_output.success,
-            result=collected if collected else last_output.result,
+            result=result_value,
             error=last_output.error,
             output_type=output_type,
             metadata={"scenario": scenario_id, "steps_executed": len(scenario.tool_chain)},

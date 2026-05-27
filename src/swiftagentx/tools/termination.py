@@ -30,11 +30,25 @@ class TerminationChecker:
         return not any(marker in last_thought for marker in action_markers)
 
     def check_repeated_actions(self, context: SessionContext, window: int = 3) -> bool:
-        if len(context.steps) < window:
+        """True when the most recent ACTION step equals any earlier ACTION
+        step in the same ReAct loop.
+
+        The old implementation looked at the last ``window`` raw steps and
+        counted ACTIONs inside that slice — which almost never caught a
+        real "LLM keeps calling the same tool" loop, because each
+        iteration adds three steps (THOUGHT / ACTION / OBSERVATION) and
+        a window of 3 only holds one ACTION at a time.
+
+        The new implementation walks the ACTION-typed steps directly,
+        which is what every realistic loop detector actually wants. The
+        ``window`` parameter is kept for backwards compatibility but is
+        ignored — there is no practical reason to limit the lookback for
+        this check.
+        """
+        actions = [s.get("content", "") for s in context.steps if s.get("type") == "ACTION"]
+        if len(actions) < 2:
             return False
-        recent_steps = context.steps[-window:]
-        actions = [s.get("content", "") for s in recent_steps if s.get("type") == "ACTION"]
-        return len(actions) >= 2 and len(actions) != len(set(actions))
+        return actions[-1] in actions[:-1]
 
     def check_error_state(self, context: SessionContext, error_threshold: int = 3) -> bool:
         error_count = sum(1 for step in context.steps if step.get("type") == "ERROR")

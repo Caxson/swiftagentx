@@ -6,8 +6,11 @@ Usage::
     from swiftagentx.admin import AdminService, create_fastapi_admin_router
 
     service = AdminService(agent)
-    router = create_fastapi_admin_router(service)
-    app.include_router(router, prefix="/admin")
+    app.include_router(create_fastapi_admin_router(service), prefix="/admin")
+
+The router itself no longer adds a prefix — let ``include_router`` decide
+where to mount it. This avoids the double-prefix bug ("/admin/admin/status")
+that bit v0.3.0 users.
 """
 
 from __future__ import annotations
@@ -20,11 +23,22 @@ if TYPE_CHECKING:
 
 def create_fastapi_admin_router(
     service: AdminService,
-    prefix: str = "/admin",
+    prefix: str = "",
     tags: list[str] | None = None,
 ):
     """
     Create a FastAPI APIRouter wired to *service*.
+
+    Args:
+        service: The :class:`AdminService` to expose.
+        prefix: Prefix to bake into the router. Defaults to ``""`` so the
+            user can supply the mount path via
+            ``app.include_router(router, prefix="/admin")`` — that is the
+            FastAPI idiom and matches the README pattern. Passing a
+            non-empty prefix here is supported for symmetry with
+            ``create_flask_admin_blueprint`` but no longer the
+            recommended path.
+        tags: OpenAPI tags applied to every route.
 
     Returns a ``fastapi.APIRouter`` — include it in your FastAPI app.
     """
