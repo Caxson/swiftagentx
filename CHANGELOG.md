@@ -6,6 +6,61 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-05-27
+
+A dogfood-driven patch release. Five frictions surfaced when actually
+building a CLI chatbot end-to-end from the v0.3.0 README; this release
+fixes all of them. No new framework features — only sharper defaults
+and clearer docs.
+
+### Fixed
+
+- **`Agent.run()` without `session_id` now shares one stable default
+  session per Agent instance.** Previously every call generated a fresh
+  random UUID, which silently disabled the v0.3 LayeredMemory feature
+  for the most natural usage pattern (single Agent, multiple `await
+  agent.run(text)` calls). Multi-user servers still pass an explicit
+  `session_id`. (Dogfood Friction #5 — the headline bug.)
+- **`OpenAICompatibleProvider` now fails fast at construction time** with
+  a clear actionable message — `pip install 'swiftagentx[openai]'` — when
+  `httpx` is missing, instead of crashing on the first chat() call with
+  the misleading `ModuleNotFoundError: No module named 'requests'`.
+  (Dogfood Friction #3.)
+- **`AgentResponse.metadata` now exposes `error_class` and
+  `error_message`** on every exception, even when `config.debug=False`.
+  Previously the user-facing answer was `"Sorry, an internal error
+  occurred"` and metadata was an empty dict — leaving callers no way to
+  branch on the failure mode. With `debug=True`, a full traceback is
+  also attached as `metadata["traceback"]`. (Dogfood Friction #4.)
+- **README's top-of-file benchmark reproduce command now prefixes with
+  `git clone` + `pip install -e ".[dev,openai,benchmark]"`** so a fresh
+  reader can actually run it. The previous version expected the
+  repo to already be local. (Dogfood Friction #1.)
+
+### Changed
+
+- The `[openai]` extra now installs `httpx[socks]>=0.25.0` instead of
+  plain `httpx`. This pulls in `socksio` so users behind a SOCKS proxy
+  (common in mainland China deployments — explicitly called out in the
+  project's `CLAUDE.md` policies) don't crash on the first request with
+  `ImportError: Using SOCKS proxy, but the 'socksio' package is not
+  installed`.
+
+### Docs
+
+- README's "OpenAI-Compatible API" Quick Start now prefaces with the
+  required extras install and the China-mainland proxy gotcha — the
+  two things that block a new user inside 60 seconds.
+- README gains a "Multi-turn conversations" section explicitly showing
+  the default-session pattern and when to pass an explicit `session_id`.
+- Both English and Chinese sections updated in lockstep.
+
+### Tests
+
+195 (v0.3.0) → 201 (v0.3.1). Six new regression tests in
+`tests/test_default_session.py` cover the default session, error
+metadata behavior, and OpenAI provider import-error path.
+
 ## [0.3.0] — 2026-05-26
 
 This release brings the framework into the 2026 generation of agent patterns
@@ -182,7 +237,8 @@ Initial public release on PyPI.
 - Middleware chain with built-in `TracingMiddleware`.
 - 105 tests covering core, cache, KB, admin, tools, streaming.
 
-[Unreleased]: https://github.com/Caxson/swiftagentx/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Caxson/swiftagentx/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Caxson/swiftagentx/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Caxson/swiftagentx/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Caxson/swiftagentx/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/Caxson/swiftagentx/releases/tag/v0.1.1

@@ -41,6 +41,17 @@ class OpenAICompatibleProvider(ModelClient):
         max_tokens: int = 2000,
         timeout_seconds: int = 60,
     ):
+        # Fail fast at construction time with a clear actionable message
+        # instead of crashing inside the first chat() call with the wrong
+        # error name. ``swiftagentx[openai]`` brings httpx with the right
+        # extras.
+        try:
+            import httpx  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                "OpenAICompatibleProvider requires the 'httpx' package. "
+                "Install it with: pip install 'swiftagentx[openai]'"
+            ) from exc
         super().__init__(
             api_key=api_key, model=model, temperature=temperature,
             max_tokens=max_tokens, timeout_seconds=timeout_seconds,

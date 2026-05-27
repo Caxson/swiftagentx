@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "swiftagentx"
-version = "0.3.0"
+version = "0.3.1"
 description = "Production-grade Agent framework with sub-second latency via tiered execution: three-level cache, dual-model routing, and scenario toolchains."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,7 +36,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openai = ["httpx>=0.25.0"]
+# httpx[socks] pulls in `socksio` so users behind a SOCKS proxy
+# (common in mainland China deployments) don't crash on first request.
+openai = ["httpx[socks]>=0.25.0"]
 dashscope = ["dashscope>=1.13.0"]
 flask = ["Flask>=2.0.0"]
 fastapi = ["fastapi>=0.104.0", "uvicorn>=0.24.0"]

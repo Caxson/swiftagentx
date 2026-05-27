@@ -69,6 +69,9 @@ together cover the predictable bulk of production traffic at **0–1 LLM
 calls per request** — that's the headline. Reproduce the numbers with:
 
 ```bash
+git clone https://github.com/Caxson/swiftagentx.git
+cd swiftagentx
+pip install -e ".[dev,openai,benchmark]"
 export DASHSCOPE_API_KEY=sk-...
 python benchmarks/real_runner.py --iterations 30
 ```
@@ -202,6 +205,11 @@ asyncio.run(main())
 
 ### With OpenAI-Compatible API
 
+> Needs `pip install "swiftagentx[openai]"` (brings in httpx + SOCKS support).
+> Inside mainland China, also prepend `HTTP_PROXY= HTTPS_PROXY= ALL_PROXY=`
+> when calling China-based endpoints (Aliyun DashScope, etc.) so httpx
+> doesn't try to tunnel through your foreign proxy.
+
 ```python
 import os, asyncio
 from swiftagentx import Agent
@@ -215,13 +223,37 @@ async def main():
             api_base="https://api.openai.com/v1",
         ),
     )
-    response = await agent.run("Explain quantum computing in one sentence.")
+    # Pass session_id to keep memory across turns. Without it, every call
+    # gets a fresh in-process session and the bot will not remember earlier
+    # turns. See "Multi-turn conversations" below.
+    response = await agent.run(
+        "Explain quantum computing in one sentence.",
+        session_id="my-session", user_id="alice",
+    )
     print(response.answer)
 
 asyncio.run(main())
 ```
 
 Works with any OpenAI-compatible endpoint (OpenAI, Azure OpenAI, DeepSeek, DashScope, etc.).
+
+### Multi-turn conversations
+
+`Agent.run(text)` accepts `session_id=` and `user_id=` keyword arguments.
+Every turn that shares the same `session_id` shares one `LayeredMemory`
+(L1 current / L2 last 4 turns verbatim / L3 reference / L4 rolling summary).
+Without a `session_id`, the agent uses one stable default session id
+generated at construction time — so a simple CLI chatbot with a single
+`Agent` instance "just works":
+
+```python
+agent = Agent(model=OpenAICompatibleProvider(...))
+while user_input := input("You: "):
+    response = await agent.run(user_input)   # default session shared across turns
+    print("Bot:", response.answer)
+```
+
+For a multi-user server, pass an explicit `session_id` per user instead.
 
 ### Custom Tools
 
@@ -586,9 +618,12 @@ Scenario 位于四层执行模型的中央。**所有数据用 DashScope Qwen �
 
 LIGHT 模型挑路径。HEAVY 模型只在请求确实需要开放式推理时才启动。
 两条便宜的路径（缓存 + Scenario）合起来覆盖生产环境绝大多数可预测的流量，
-**每个请求 0-1 次 LLM 调用**——这就是头号卖点。一行命令复现：
+**每个请求 0-1 次 LLM 调用**——这就是头号卖点。复现：
 
 ```bash
+git clone https://github.com/Caxson/swiftagentx.git
+cd swiftagentx
+pip install -e ".[dev,openai,benchmark]"
 export DASHSCOPE_API_KEY=sk-...
 python benchmarks/real_runner.py --iterations 30
 ```
@@ -710,6 +745,10 @@ asyncio.run(main())
 
 ### 接入 OpenAI 兼容 API
 
+> 需要 `pip install "swiftagentx[openai]"`（包含 httpx + SOCKS 支持）。
+> 国内调用国内服务（如阿里云 DashScope）时，前面加 `HTTP_PROXY= HTTPS_PROXY= ALL_PROXY=`
+> 避免 httpx 走海外代理失败。
+
 ```python
 import os, asyncio
 from swiftagentx import Agent
@@ -723,11 +762,32 @@ async def main():
             api_base="https://api.openai.com/v1",
         ),
     )
-    response = await agent.run("用一句话解释量子计算。")
+    # 传 session_id 让对话跨轮保持记忆。不传也行（同一 Agent 实例的多次 run
+    # 共享一个默认 session），多用户场景再显式分配 session_id。详见下方"多轮对话"。
+    response = await agent.run(
+        "用一句话解释量子计算。",
+        session_id="my-session", user_id="alice",
+    )
     print(response.answer)
 
 asyncio.run(main())
 ```
+
+### 多轮对话
+
+`Agent.run(text)` 接受 `session_id=` 和 `user_id=` 关键字参数。同一 `session_id`
+的所有 turn 共享同一份 `LayeredMemory`（L1 当前问题 / L2 最近 4 轮 verbatim /
+L3 参考窗口 / L4 滚动摘要）。不传 `session_id` 时，Agent 用一个**构造时生成的
+稳定默认 session id**，所以单 Agent 实例的 CLI 聊天机器人"开箱即用"：
+
+```python
+agent = Agent(model=OpenAICompatibleProvider(...))
+while user_input := input("You: "):
+    response = await agent.run(user_input)   # 默认 session 跨轮共享
+    print("Bot:", response.answer)
+```
+
+多用户服务端场景下，每个用户传自己的 `session_id` 即可隔离。
 
 支持任何 OpenAI 兼容端点（OpenAI、Azure OpenAI、DeepSeek、通义千问 DashScope 等）。
 

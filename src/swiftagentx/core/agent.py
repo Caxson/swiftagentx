@@ -137,6 +137,13 @@ class Agent:
         # Max iterations
         self.max_iterations = self.config.max_iterations
 
+        # Default per-instance session id. When run() / run_stream() is called
+        # without an explicit session_id, this stable id is used so that
+        # successive turns share the same LayeredMemory — the natural
+        # behavior for single-user CLI / notebook usage. Multi-user servers
+        # should pass an explicit session_id per user.
+        self._default_session_id = f"default-{uuid.uuid4().hex[:8]}"
+
         # Built-in hooks (opt-out via config flags).
         if self.config.memory_enable_topic_change_hook:
             self.hooks.register(TopicChangeHook())
@@ -479,7 +486,7 @@ class Agent:
         request_id = str(uuid.uuid4())
         start_time = time.time()
 
-        session_id = context_vars.get("session_id", f"session_{uuid.uuid4().hex[:8]}")
+        session_id = context_vars.get("session_id") or self._default_session_id
         user_id = context_vars.get("user_id", "anonymous")
 
         context = SessionContext(
@@ -630,13 +637,24 @@ class Agent:
         except Exception as e:
             logger.error(f"Agent run failed: {e}", exc_info=True)
             elapsed_ms = (time.time() - start_time) * 1000
+            # Even in non-debug mode, surface the exception class + a short
+            # message so callers can branch on it without seeing a full
+            # traceback. Full traceback only when debug=True.
+            metadata: dict[str, Any] = {
+                "error_class": type(e).__name__,
+                "error_message": str(e)[:240],
+            }
+            if self.config.debug:
+                import traceback as _tb
+                metadata["traceback"] = _tb.format_exc()
+                metadata["error"] = str(e)
             return AgentResponse(
                 session_id=session_id,
                 request_id=request_id,
                 answer=self._sanitize_error(e),
                 total_iterations=context.current_iteration,
                 execution_time_ms=elapsed_ms,
-                metadata={"error": str(e)} if self.config.debug else {},
+                metadata=metadata,
             )
 
     async def run_stream(
@@ -763,11 +781,19 @@ class Agent:
             error_msg = self._sanitize_error(e)
             await adapter.send_event(SSEEventBuilder.error(error_msg))
             await adapter.finish()
+            metadata: dict[str, Any] = {
+                "error_class": type(e).__name__,
+                "error_message": str(e)[:240],
+            }
+            if self.config.debug:
+                import traceback as _tb
+                metadata["traceback"] = _tb.format_exc()
+                metadata["error"] = str(e)
             return AgentResponse(
                 session_id=request.session_id, request_id=request_id,
                 answer=error_msg, total_iterations=context.current_iteration,
                 execution_time_ms=(time.time() - start_time) * 1000,
-                metadata={"error": str(e)} if self.config.debug else {},
+                metadata=metadata,
             )
 
     # --- Lifecycle hooks (override in subclass) ---
