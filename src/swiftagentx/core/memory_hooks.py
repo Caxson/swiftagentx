@@ -122,15 +122,22 @@ class TopicChangeHook(SemanticHook):
         memory = context.memory
         if not isinstance(memory, LayeredMemory):
             return HookResult()
+        # Promote ALL of L2 → L3 before summarising. Otherwise on a topic
+        # boundary with a half-full L2, summarize() would find L3 empty
+        # and silently no-op — the old topic would keep bleeding into the
+        # new one via recent-turn replay (dogfood Friction #B-5).
+        moved = await memory.flush_l2_to_l3()
         logger.info(
-            "TopicChangeHook: topic change detected for session %s — folding L3 into L4.",
-            context.session_id,
+            "TopicChangeHook: topic change detected for session %s — "
+            "promoted %d L2 turn(s) to L3, folding into L4.",
+            context.session_id, moved,
         )
         new_summary = await memory.summarize()
         return HookResult(
             action="continue",
             metadata={
                 "topic_change": True,
+                "l2_turns_flushed": moved,
                 "summary_refreshed": new_summary is not None,
             },
         )

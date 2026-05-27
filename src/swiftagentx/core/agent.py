@@ -1024,12 +1024,28 @@ class Agent:
                 # (dogfood Friction #6). We break the loop and let the
                 # caller synthesise the final answer from the last
                 # observation in accumulated_context.
-                proposed_action = f"{tool_name}({tool_params})"
-                prior_actions = [
-                    s.get("content", "") for s in context.steps
+                #
+                # Dedup key normalises whitespace inside string params so
+                # ``calculator(12*34)`` and ``calculator(12 * 34)`` count
+                # as the same call — LLMs love to "retry" with cosmetic
+                # variations on the prior call's arg formatting (dogfood
+                # Round 5). We strip all whitespace inside string values
+                # only; we don't touch the actual tool_params passed to
+                # the tool, so semantically-significant whitespace (e.g.,
+                # search queries) is preserved when the tool runs.
+                def _dedup_key(name: str, params: dict[str, Any]) -> str:
+                    norm = {
+                        k: ("".join(v.split()) if isinstance(v, str) else v)
+                        for k, v in params.items()
+                    }
+                    return f"{name}({norm})"
+
+                proposed_action = _dedup_key(tool_name, tool_params)
+                prior_dedup_keys = [
+                    s.get("metadata", {}).get("dedup_key", "") for s in context.steps
                     if s.get("type") == "ACTION"
                 ]
-                if proposed_action in prior_actions:
+                if proposed_action in prior_dedup_keys:
                     logger.info(
                         "ReAct: refusing duplicate action %s; "
                         "asking the model to finalise from existing observations.",
@@ -1057,7 +1073,11 @@ class Agent:
                 observation = str(result.result) if result.success else f"Error: {result.error}"
                 accumulated_context += f"\nTool: {tool_name}\nResult: {observation}\n"
 
-                context.add_step("ACTION", f"{tool_name}({tool_params})")
+                context.add_step(
+                    "ACTION",
+                    f"{tool_name}({tool_params})",
+                    metadata={"dedup_key": proposed_action},
+                )
                 context.add_step("OBSERVATION", observation)
 
                 if adapter:

@@ -86,6 +86,9 @@ class TestSSEEventBuilder:
     def test_to_sse_message_format(self):
         event = SSEEventBuilder.completed("done")
         msg = event.to_sse_message()
-        assert msg.startswith("data: ")
+        # Now emits both ``event: <type>`` and ``data: ...`` lines so
+        # consumers can dispatch by SSE event type (Round 5 fix).
+        assert msg.startswith("event: completed\n")
+        assert "\ndata: " in msg
         assert msg.endswith("\n\n")
         assert '"completed"' in msg

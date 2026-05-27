@@ -50,7 +50,18 @@ class StreamEvent(BaseModel):
     timestamp: float = Field(default_factory=lambda: datetime.now().timestamp())
 
     def to_sse_message(self) -> str:
-        """Convert to SSE message format."""
+        """Convert to SSE wire format.
+
+        Every frame is emitted with the standard SSE ``event: <type>`` field
+        in front of the ``data:`` payload so consumers can dispatch by event
+        type without JSON-parsing the body (browser ``EventSource``,
+        aiohttp-sse-client, etc.). The JSON payload still carries the type
+        in ``data.event`` for clients that prefer to parse everything from
+        the body.
+        """
+        # ANSWER_CHUNK has historically been emitted with the SSE event
+        # type ``message`` (chat-style streaming) and a flatter payload.
+        # Keep that wire shape — only add the SSE event line.
         if self.event_type == StreamEventType.ANSWER_CHUNK:
             event_data = {
                 "event": "message",
@@ -60,7 +71,10 @@ class StreamEvent(BaseModel):
                 if key in self.data:
                     event_data[key] = self.data[key]
             event_data["created_at"] = int(self.timestamp)
-            return f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+            return (
+                "event: message\n"
+                f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+            )
         else:
             event_data = {
                 "event": self.event_type.value,
@@ -69,7 +83,10 @@ class StreamEvent(BaseModel):
                 "data": self.data,
                 "timestamp": self.timestamp,
             }
-            return f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+            return (
+                f"event: {self.event_type.value}\n"
+                f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+            )
 
 
 class ContextParameters(BaseModel):

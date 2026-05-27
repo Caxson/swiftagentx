@@ -52,7 +52,7 @@ from .core.workspace import (
 )
 from .providers.mcp import MCPClient, MCPClientError, MCPServerSpec, MCPTool
 from .core.model_client import DummyModelClient, ModelClient, ModelClientFactory, ModelResponse
-from .core.pipeline import PipelineStage, RequestPipeline, StageResult
+from .core.pipeline import PipelineStage, RequestPipeline, StageAction, StageResult
 from .core.prompt import PromptManager, PromptTemplate
 from .core.router import IntentLevel, IntentResult, IntentRouter
 from .knowledge_base.base import KnowledgeBase
@@ -103,7 +103,7 @@ __all__ = [
     "CacheManager",
     "PromptManager", "PromptTemplate",
     "IntentLevel", "IntentResult", "IntentRouter",
-    "PipelineStage", "StageResult", "RequestPipeline",
+    "PipelineStage", "StageResult", "StageAction", "RequestPipeline",
     # Tools
     "Tool", "ToolOutput", "ToolOutputType", "AgentContext",
     "ToolRegistry", "ToolExecutor",

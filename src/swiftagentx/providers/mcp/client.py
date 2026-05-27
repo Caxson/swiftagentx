@@ -306,8 +306,22 @@ class MCPClient:
             raise MCPClientError(f"MCP request {method!r} timed out") from exc
 
         if "error" in response:
+            # JSON-RPC error envelope: {"code": int, "message": str, "data"?: any}.
+            # Format it for an LLM observation rather than ``repr(dict)`` —
+            # the LLM sees this as an observation in the ReAct loop and the
+            # "code -32000" / "message" framing is easier to reason about
+            # than ``{'code': -32000, 'message': '...'}`` (dogfood C-3).
+            err = response["error"]
+            if isinstance(err, dict):
+                code = err.get("code", "?")
+                message = err.get("message", "")
+                detail = f" — {err['data']}" if err.get("data") else ""
+                raise MCPClientError(
+                    f"MCP server {self.spec.name} {method!r} failed "
+                    f"(code {code}): {message}{detail}"
+                )
             raise MCPClientError(
-                f"MCP server {self.spec.name} returned error for {method!r}: {response['error']}"
+                f"MCP server {self.spec.name} {method!r} failed: {err}"
             )
         return response.get("result", {})
 

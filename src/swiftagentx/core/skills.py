@@ -123,7 +123,14 @@ def parse_skill_markdown(text: str, *, source_path: Path | None = None) -> Skill
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """Split a YAML frontmatter block (delimited by lines of ``---``) from body."""
+    """Split a YAML frontmatter block (delimited by lines of ``---``) from body.
+
+    If the text *clearly intended* frontmatter (starts with ``---\\n``) but is
+    missing the closing ``---`` line, raise a clear ValueError. Silently
+    falling back to "treat the whole thing as body" — the previous behaviour
+    — meant the user's ``name: foo / description: bar`` lines were lost and
+    they had no idea why (dogfood Friction #D-8).
+    """
     if not text.startswith("---"):
         return {}, text
     try:
@@ -134,7 +141,13 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     try:
         end_idx = rest.index("\n---")
     except ValueError:
-        return {}, text
+        raise ValueError(
+            "Skill markdown starts with '---' but the frontmatter block "
+            "is never closed by a matching '---' line. Add a '---' line "
+            "after the last frontmatter key (e.g. after 'description:') "
+            "and before the body, or remove the opening '---' if you "
+            "didn't intend frontmatter."
+        ) from None
     fm_block = rest[:end_idx]
     body = rest[end_idx + 4:].lstrip("\n")
     fm_data = _parse_simple_yaml(fm_block)

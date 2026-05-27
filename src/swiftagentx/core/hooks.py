@@ -252,11 +252,55 @@ class LLMHook(Hook):
             return self.prompt_template
 
     def parse_response(self, raw: str) -> HookResult:
-        try:
-            data = json.loads(raw)
-            return HookResult(**data)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return HookResult(metadata={"raw": raw})
+        """Extract a HookResult from the model's text response.
+
+        Real LLMs love to wrap JSON in markdown fences (``` ```json ... ``` ```)
+        or surround it with prose. We try three strategies before giving up:
+
+        1. Parse the raw text directly.
+        2. Strip markdown code fences (``​```json`` … ``​```​``)
+           and parse the inside.
+        3. Extract the first ``{ … }`` block and parse that.
+
+        Total parse failure is logged at WARNING level so the user knows
+        their LLMHook isn't taking effect (previously it was a completely
+        silent no-op — dogfood Friction #B-4).
+        """
+        candidates: list[str] = [raw]
+
+        stripped = raw.strip()
+        # Strategy 2: peel a fenced block if present.
+        if stripped.startswith("```"):
+            inner = stripped
+            # drop opening fence (``` or ```json or ```yaml etc.)
+            first_nl = inner.find("\n")
+            if first_nl != -1:
+                inner = inner[first_nl + 1:]
+            # drop trailing fence
+            if inner.rstrip().endswith("```"):
+                inner = inner.rstrip()[:-3]
+            candidates.append(inner.strip())
+
+        # Strategy 3: first balanced-looking { ... }
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end > start:
+            candidates.append(raw[start:end + 1])
+
+        for candidate in candidates:
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    return HookResult(**data)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+
+        logger.warning(
+            "LLMHook %s could not parse model response as JSON; "
+            "returning empty HookResult. Raw response preview: %r",
+            self.name, raw[:200],
+        )
+        return HookResult(metadata={"raw": raw, "parse_failed": True})
 
     async def handle(self, context: HookContext) -> HookResult:
         agent = context.agent

@@ -305,6 +305,27 @@ class LayeredMemory:
 
     # ---- summarize ------------------------------------------------------
 
+    async def flush_l2_to_l3(self) -> int:
+        """Promote *every* turn currently in L2 down to L3.
+
+        Used by topic-change hooks: when a topic boundary is detected, the
+        whole recent-turn buffer is "old context" that we want folded into
+        the summary so it doesn't bleed across the boundary. Without this,
+        ``summarize()`` finds L3 empty and silently no-ops (dogfood
+        Friction #B-5).
+
+        Returns the number of turns promoted.
+        """
+        async with self._lock:
+            await self.load()
+            moved = len(self.l2)
+            if moved == 0:
+                return 0
+            self.l3.extend(self.l2)
+            self.l2.clear()
+        await self.save()
+        return moved
+
     async def summarize(self) -> str | None:
         """
         Fold L3 into L4. Returns the new summary, or None if nothing to do.
