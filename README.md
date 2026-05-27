@@ -217,25 +217,35 @@ from swiftagentx.providers.openai_compatible import OpenAICompatibleProvider
 
 async def main():
     agent = Agent(
+        # OpenAI:
+        # model=OpenAICompatibleProvider(
+        #     api_key=os.environ["OPENAI_API_KEY"], model="gpt-4o",
+        #     api_base="https://api.openai.com/v1",
+        # ),
+        # Aliyun DashScope (Qwen — what the benchmarks above use):
         model=OpenAICompatibleProvider(
-            api_key=os.environ["LLM_API_KEY"],
-            model="gpt-4",
-            api_base="https://api.openai.com/v1",
+            api_key=os.environ["DASHSCOPE_API_KEY"],
+            model="qwen-flash",
+            api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
         ),
+        # DeepSeek:
+        # model=OpenAICompatibleProvider(
+        #     api_key=os.environ["DEEPSEEK_API_KEY"], model="deepseek-chat",
+        #     api_base="https://api.deepseek.com/v1",
+        # ),
     )
-    # Pass session_id to keep memory across turns. Without it, every call
-    # gets a fresh in-process session and the bot will not remember earlier
-    # turns. See "Multi-turn conversations" below.
-    response = await agent.run(
-        "Explain quantum computing in one sentence.",
-        session_id="my-session", user_id="alice",
-    )
+    # `session_id` is optional: a single Agent instance shares one default
+    # session across calls, so a simple CLI bot has memory out of the box.
+    # Multi-user servers should pass an explicit session_id per user.
+    response = await agent.run("Explain quantum computing in one sentence.")
     print(response.answer)
 
 asyncio.run(main())
 ```
 
-Works with any OpenAI-compatible endpoint (OpenAI, Azure OpenAI, DeepSeek, DashScope, etc.).
+Works with any OpenAI-compatible endpoint — OpenAI, Azure OpenAI, DeepSeek,
+DashScope, Together, Fireworks, etc. Pick the snippet that matches your
+provider and set the matching env var.
 
 ### Multi-turn conversations
 
@@ -429,22 +439,51 @@ app.include_router(create_fastapi_router(agent))
 
 ### Lifecycle Hooks
 
-Customize behavior without modifying framework internals:
+Two ways to hook into the request lifecycle.
+
+**A. Subclass `Agent` and override** — simplest for project-local logic:
 
 ```python
 from swiftagentx import Agent
 
 class MyAgent(Agent):
-    async def on_request_start(self, context):
-        print(f"Request from {context.user_id}: {context.user_input}")
-
-    async def on_before_tool_call(self, context, tool_name, params):
-        print(f"Calling tool: {tool_name}")
-
-    async def on_before_respond(self, context, answer):
-        # Modify the answer before it's sent to the user
-        return answer.replace("AI", "Assistant")
+    async def on_request_start(self, context): ...           # request received
+    async def on_before_classify(self, context): ...          # before intent classification
+    async def on_after_classify(self, context, intent): ...   # after intent classification
+    async def on_before_tool_call(self, context, tool_name, params): ...
+    async def on_after_tool_call(self, context, tool_name, result): ...
+    async def on_before_respond(self, context, answer):       # may rewrite answer
+        return answer
+    async def on_request_end(self, context, response): ...    # request finished
 ```
+
+Each override is optional; the framework calls the base no-op when you
+don't override.
+
+**B. `HookRegistry` — declarative, no subclassing** (v0.3+):
+
+```python
+from swiftagentx import HookEvent, HookResult, PythonHook
+
+async def log_tool(ctx):
+    print(f"tool {ctx.tool_name}({ctx.tool_args}) → {ctx.tool_result}")
+    return HookResult()
+
+agent.hooks.register(PythonHook(
+    name="log_tools", events={HookEvent.AFTER_TOOL_CALL}, handler=log_tool,
+))
+```
+
+Twelve lifecycle events are dispatched: `SESSION_START`, `REQUEST_START`,
+`BEFORE_CLASSIFY`, `AFTER_CLASSIFY`, `BEFORE_SCENARIO_STEP`,
+`AFTER_SCENARIO_STEP`, `BEFORE_TOOL_CALL`, `AFTER_TOOL_CALL`,
+`BEFORE_REACT_ITER`, `AFTER_REACT_ITER`, `BEFORE_RESPOND`, `REQUEST_END`
+— plus semantic events like `TOPIC_CHANGE`. Handlers can return
+`HookResult(action="short_circuit", answer=...)` to bypass the rest of
+the request (useful for security policies / rate limiters / quota checks).
+
+Both styles coexist and fire at the same boundary — subclass methods
+first, then registered hooks.
 
 ### Middleware
 
@@ -756,18 +795,26 @@ from swiftagentx.providers.openai_compatible import OpenAICompatibleProvider
 
 async def main():
     agent = Agent(
+        # OpenAI:
+        # model=OpenAICompatibleProvider(
+        #     api_key=os.environ["OPENAI_API_KEY"], model="gpt-4o",
+        #     api_base="https://api.openai.com/v1",
+        # ),
+        # 阿里云 DashScope (Qwen，benchmark 用的就是这套):
         model=OpenAICompatibleProvider(
-            api_key=os.environ["LLM_API_KEY"],
-            model="gpt-4",
-            api_base="https://api.openai.com/v1",
+            api_key=os.environ["DASHSCOPE_API_KEY"],
+            model="qwen-flash",
+            api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
         ),
+        # DeepSeek:
+        # model=OpenAICompatibleProvider(
+        #     api_key=os.environ["DEEPSEEK_API_KEY"], model="deepseek-chat",
+        #     api_base="https://api.deepseek.com/v1",
+        # ),
     )
-    # 传 session_id 让对话跨轮保持记忆。不传也行（同一 Agent 实例的多次 run
-    # 共享一个默认 session），多用户场景再显式分配 session_id。详见下方"多轮对话"。
-    response = await agent.run(
-        "用一句话解释量子计算。",
-        session_id="my-session", user_id="alice",
-    )
+    # 不传 session_id 也行——同一 Agent 实例的多次 run 共享一个默认 session，
+    # 单用户 CLI 聊天开箱即用。多用户服务端再为每个用户传自己的 session_id。
+    response = await agent.run("用一句话解释量子计算。")
     print(response.answer)
 
 asyncio.run(main())
@@ -964,22 +1011,49 @@ app.include_router(create_fastapi_router(agent))
 
 ### 生命周期钩子
 
-无需修改框架源码即可自定义行为：
+两种风格挂钩。
+
+**A. 子类重写 `Agent`** — 项目内部逻辑最简单：
 
 ```python
 from swiftagentx import Agent
 
 class MyAgent(Agent):
-    async def on_request_start(self, context):
-        print(f"收到请求 - 用户: {context.user_id}，输入: {context.user_input}")
-
-    async def on_before_tool_call(self, context, tool_name, params):
-        print(f"调用工具: {tool_name}")
-
-    async def on_before_respond(self, context, answer):
-        # 在发送给用户之前修改回答
+    async def on_request_start(self, context): ...           # 收到请求
+    async def on_before_classify(self, context): ...          # 意图分类前
+    async def on_after_classify(self, context, intent): ...   # 意图分类后
+    async def on_before_tool_call(self, context, tool_name, params): ...
+    async def on_after_tool_call(self, context, tool_name, result): ...
+    async def on_before_respond(self, context, answer):       # 可改写答复
         return answer
+    async def on_request_end(self, context, response): ...    # 请求结束
 ```
+
+每个重写都可选，没重写就调框架的空实现。
+
+**B. `HookRegistry` — 声明式，不需要子类**（v0.3+）：
+
+```python
+from swiftagentx import HookEvent, HookResult, PythonHook
+
+async def log_tool(ctx):
+    print(f"tool {ctx.tool_name}({ctx.tool_args}) → {ctx.tool_result}")
+    return HookResult()
+
+agent.hooks.register(PythonHook(
+    name="log_tools", events={HookEvent.AFTER_TOOL_CALL}, handler=log_tool,
+))
+```
+
+框架派发 12 个 lifecycle 事件：`SESSION_START`、`REQUEST_START`、
+`BEFORE_CLASSIFY`、`AFTER_CLASSIFY`、`BEFORE_SCENARIO_STEP`、
+`AFTER_SCENARIO_STEP`、`BEFORE_TOOL_CALL`、`AFTER_TOOL_CALL`、
+`BEFORE_REACT_ITER`、`AFTER_REACT_ITER`、`BEFORE_RESPOND`、`REQUEST_END`
+——加上 `TOPIC_CHANGE` 等语义事件。Handler 可返回
+`HookResult(action="short_circuit", answer=...)` 跳过后续请求处理
+（用于安全策略 / 限流 / 配额检查等）。
+
+两种风格可以同时用——同一时刻先调子类方法，再 dispatch 注册的 hook。
 
 ### 中间件
 

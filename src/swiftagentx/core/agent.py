@@ -482,12 +482,26 @@ class Agent:
         Returns:
             AgentResponse with the final answer
         """
-        self._validate_input(user_input)
         request_id = str(uuid.uuid4())
         start_time = time.time()
-
         session_id = context_vars.get("session_id") or self._default_session_id
         user_id = context_vars.get("user_id", "anonymous")
+
+        # Convert input-validation failures into an AgentResponse instead
+        # of raising ValueError out of run(). A web handler that didn't
+        # wrap run() in try/except would otherwise return a 500 with a
+        # leaky stack trace just because the user sent a long message.
+        try:
+            self._validate_input(user_input)
+        except ValueError as exc:
+            return AgentResponse(
+                session_id=session_id,
+                request_id=request_id,
+                answer=str(exc),
+                total_iterations=0,
+                execution_time_ms=(time.time() - start_time) * 1000,
+                metadata={"input_rejected": True, "error_class": "ValueError"},
+            )
 
         # If any user-registered middleware exists, wrap the rest of run()
         # inside the chain so middlewares can log before/after, mutate the
@@ -745,9 +759,19 @@ class Agent:
         Returns:
             AgentResponse
         """
-        self._validate_input(request.user_input)
         request_id = str(uuid.uuid4())
         start_time = time.time()
+        try:
+            self._validate_input(request.user_input)
+        except ValueError as exc:
+            return AgentResponse(
+                session_id=request.session_id,
+                request_id=request_id,
+                answer=str(exc),
+                total_iterations=0,
+                execution_time_ms=(time.time() - start_time) * 1000,
+                metadata={"input_rejected": True, "error_class": "ValueError"},
+            )
 
         context = SessionContext(
             session_id=request.session_id,

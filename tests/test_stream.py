@@ -32,11 +32,16 @@ class TestSSEStreamAdapter:
         assert adapter.is_finished
 
     @pytest.mark.asyncio
-    async def test_send_after_finish_raises(self):
+    async def test_send_after_finish_drops_silently(self):
+        """v0.3.1+ contract: send_event after finish/close drops the event
+        instead of raising. Producers don't need try/except around every
+        send_event call — that's cooperative cancellation for SSE."""
         adapter = SSEStreamAdapter()
         await adapter.finish()
-        with pytest.raises(RuntimeError, match="already finished"):
-            await adapter.send_event(SSEEventBuilder.initialized())
+        # Must NOT raise.
+        await adapter.send_event(SSEEventBuilder.initialized())
+        assert adapter.events_dropped >= 1
+        assert adapter.is_finished
 
     def test_stats(self):
         adapter = SSEStreamAdapter(buffer_size=50)

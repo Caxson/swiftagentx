@@ -595,3 +595,55 @@ async def test_scenario_kwargs_template_for_multi_param_tool() -> None:
     response = await agent.run("compute the sum", lhs="3", rhs="4")
     assert captured == [{"a": "3", "b": "4"}], f"got {captured}"
     assert "7" in response.answer
+
+
+# ---------------------------------------------------------------------------
+# Friction D-5 — run_stream survives a disconnected consumer fast
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_stream_with_disconnected_consumer_finishes_fast() -> None:
+    """If the SSE consumer disappears (buffer fills + nobody drains it),
+    the producer should mark the adapter closed within ~1s and silently
+    drop further events, instead of blocking 5s per send_event and
+    raising a naked RuntimeError out of run_stream."""
+    import time as _time
+    from swiftagentx import AgentRequest, SSEStreamAdapter
+    from swiftagentx.core.model_client import ModelClient, ModelResponse
+
+    class FloodingModel(ModelClient):
+        async def chat(self, messages: Any, **kw: Any) -> Any:
+            return ModelResponse(content="x" * 200, model=self.model)
+
+        async def complete(self, prompt: Any, **kw: Any) -> Any:
+            return ModelResponse(content="x" * 200, model=self.model)
+
+        async def stream_chat(self, messages: Any, **kw: Any) -> Any:
+            for _ in range(200):
+                yield "x"
+
+        async def stream_complete(self, prompt: Any, **kw: Any) -> Any:
+            for ch in "x" * 200:
+                yield ch
+
+    agent = Agent(
+        model=FloodingModel(api_key="k", model="m"),
+        config=SwiftAgentConfig(memory_enable_topic_change_hook=False,
+                                enable_cache=False),
+    )
+    adapter = SSEStreamAdapter(buffer_size=5, put_timeout=0.1)
+    request = AgentRequest(user_id="u", session_id="s", user_input="hello")
+
+    start = _time.perf_counter()
+    response = await agent.run_stream(request, adapter)
+    elapsed = _time.perf_counter() - start
+
+    # Must finish well under the old 10s pathology.
+    assert elapsed < 2.0, (
+        f"run_stream took {elapsed:.1f}s with disconnected consumer; "
+        f"expected <2.0s after the v0.3.1 disconnect fix."
+    )
+    assert response.answer  # returned cleanly, didn't raise
+    assert adapter.is_closed or adapter.is_finished
+    assert adapter.events_dropped >= 1

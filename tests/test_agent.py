@@ -73,13 +73,18 @@ class TestAgentBasic:
 class TestAgentSecurity:
     @pytest.mark.asyncio
     async def test_input_length_validation(self):
+        """Over-length input is rejected as an AgentResponse — does NOT
+        leak a ValueError out of run() (which would otherwise 500 a
+        web handler that forgot try/except)."""
         from swiftagentx.models.config import SwiftAgentConfig
         agent = Agent(
             model=DummyModelClient(api_key="test", model="dummy"),
             config=SwiftAgentConfig(max_input_length=10),
         )
-        with pytest.raises(ValueError, match="exceeds maximum length"):
-            await agent.run("a" * 100)
+        response = await agent.run("a" * 100)
+        assert response.metadata.get("input_rejected") is True
+        assert response.metadata.get("error_class") == "ValueError"
+        assert "exceeds maximum length" in response.answer
 
     @pytest.mark.asyncio
     async def test_error_sanitized_in_production(self):
@@ -117,6 +122,7 @@ class TestAgentSecurity:
 
     @pytest.mark.asyncio
     async def test_stream_input_validation(self):
+        """run_stream also returns an AgentResponse rather than raising."""
         from swiftagentx.models.config import SwiftAgentConfig
         agent = Agent(
             model=DummyModelClient(api_key="test", model="dummy"),
@@ -126,8 +132,9 @@ class TestAgentSecurity:
             user_id="u1", session_id="s1", user_input="a" * 100,
         )
         adapter = SSEStreamAdapter()
-        with pytest.raises(ValueError, match="exceeds maximum length"):
-            await agent.run_stream(request, adapter)
+        response = await agent.run_stream(request, adapter)
+        assert response.metadata.get("input_rejected") is True
+        assert "exceeds maximum length" in response.answer
 
 
 class TestAgentConfig:
