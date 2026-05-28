@@ -471,17 +471,50 @@ class Agent:
                 f"Input exceeds maximum length ({self.config.max_input_length} characters)"
             )
 
-    async def run(self, user_input: str, **context_vars: Any) -> AgentResponse:
+    async def run(self, user_input: Any, **context_vars: Any) -> AgentResponse:
         """
         Process a user request (non-streaming).
 
-        Args:
-            user_input: User's input text
-            **context_vars: Additional context (user_id, session_id, etc.)
+        Accepts either:
+
+        - a plain string ``user_input`` plus optional ``session_id`` /
+          ``user_id`` kwargs (the common convenience shape used in the
+          README quick-start examples), or
+        - an :class:`AgentRequest` instance (the same shape used by
+          :meth:`run_stream`) — its fields are unpacked into
+          ``context_vars`` automatically.
+
+        Mixing the two is an error: passing an ``AgentRequest`` *and*
+        kwargs at the same time raises a clear ``TypeError`` rather than
+        silently dropping the kwargs.
 
         Returns:
-            AgentResponse with the final answer
+            AgentResponse with the final answer.
         """
+        # Accept AgentRequest as a polymorphic alternative to (str, **kw).
+        # Without this, ``agent.run(AgentRequest(...))`` — a reasonable
+        # user expectation given run_stream takes one — crashes deep
+        # inside _validate_input with a confusing
+        # ``object of type 'AgentRequest' has no len()`` TypeError.
+        if isinstance(user_input, AgentRequest):
+            if context_vars:
+                raise TypeError(
+                    "Agent.run() received an AgentRequest plus extra "
+                    "keyword arguments — pick one calling style: either "
+                    "`run(request)` or `run(text, session_id=..., user_id=...)`."
+                )
+            req = user_input
+            user_input = req.user_input
+            context_vars = {
+                "session_id": req.session_id,
+                "user_id": req.user_id,
+                "app_version": req.app_version,
+                "platform": req.platform,
+                "device_id": req.device_id,
+                "channel": req.channel,
+                **(req.extra_params or {}),
+            }
+
         request_id = str(uuid.uuid4())
         start_time = time.time()
         session_id = context_vars.get("session_id") or self._default_session_id
