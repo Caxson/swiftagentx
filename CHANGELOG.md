@@ -6,14 +6,18 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
-## [0.3.1] — 2026-05-27
+## [0.3.1] — 2026-05-28
 
-A dogfood-driven patch release. Five frictions surfaced when actually
-building a CLI chatbot end-to-end from the v0.3.0 README; this release
-fixes all of them. No new framework features — only sharper defaults
-and clearer docs.
+A dogfood-driven patch release. Took the v0.3.0 README and tried to
+build a real chatbot from it as a first-time user, then spawned four
+parallel sub-agents to verify every documented feature. Six rounds of
+fixes later, the same walkthrough plus all six `examples/cookbook/`
+scripts, Flask, FastAPI, real-LLM benchmarks, and a literal smoke of
+every Python block in the README run clean end-to-end. No new
+framework features — only sharper defaults, fewer footguns, clearer
+errors.
 
-### Fixed
+### Fixed — defaults & framework wiring
 
 - **`Agent.run()` without `session_id` now shares one stable default
   session per Agent instance.** Previously every call generated a fresh
@@ -21,21 +25,140 @@ and clearer docs.
   for the most natural usage pattern (single Agent, multiple `await
   agent.run(text)` calls). Multi-user servers still pass an explicit
   `session_id`. (Dogfood Friction #5 — the headline bug.)
+- **`Agent.run()` now accepts an `AgentRequest` polymorphically.**
+  Previously `agent.run(AgentRequest(...))` crashed inside
+  `_validate_input` with `TypeError: object of type 'AgentRequest' has
+  no len()` — a reasonable user expectation given `run_stream(request,
+  adapter)` takes one. Mixing AgentRequest + kwargs raises a clear
+  `TypeError` explaining the two calling styles.
+- **Three-level cache now actually writes.** `cache.set_level_2()` was
+  never called from `run()` / `run_stream()` — only reads were wired.
+  Cache hits worked the second time only by accident (Scenario short
+  circuit's own cache layer). Now every successful turn populates L2.
+- **`Agent.use(middleware)` now actually runs the chain.** The chain
+  was built and middlewares were appended, but `run()` never invoked
+  it — every middleware was silently dropped. Wired into both `run()`
+  and `run_stream()`, with short-circuit support.
+- **Six lifecycle `HookEvent`s now actually dispatch:** BEFORE / AFTER
+  TOOL_CALL, BEFORE / AFTER SCENARIO_STEP, BEFORE / AFTER REACT_ITER.
+  They were declared in the enum and documented but never fired —
+  HookRegistry handlers attached to them would never run. Added a
+  contract test (`test_every_lifecycle_hook_event_fires_at_least_once`)
+  that exercises every enum value to keep this from regressing again.
+- **FastAPI admin router no longer requires a double-prefix.** Users
+  who followed the README pattern `app.include_router(router,
+  prefix="/admin")` got endpoints at `/admin/admin/status` instead of
+  `/admin/status`. The router now declares no internal prefix and
+  defers entirely to the caller's mount path.
+- **ReAct loop refuses to call the same tool twice in a row** with
+  semantically-equivalent args. `calculator(12*34)` and `calculator(12
+  * 34)` previously counted as different actions, so qwen-flash gladly
+  ran them both. Dedup key now normalises whitespace inside string
+  params. Real measured impact: step9_hooks_middleware latency
+  5463ms → 2831ms on the same prompt.
+- **Scenario engine's template substitution and `direct` output**.
+  Multi-arg MCP-shaped tools were unreachable from a Scenario chain
+  (only single-string `query_template` worked) — added
+  `ToolChainStep.kwargs_template: dict[str, str]` so MCP `add(a, b)`-
+  style tools work inside a Scenario. The `direct` output type
+  branch incorrectly returned the initial `extra_vars` dict (user_id /
+  session_id metadata) instead of the tool's real result when no step
+  declared `extract_to`. Fixed; matches README contract.
+- **SSE wire format now emits the standard `event: <type>` field**
+  in front of every `data:` payload. Browser `EventSource` and
+  `aiohttp-sse-client` both dispatch on this field, but it was buried
+  inside the JSON payload only. README claimed "12 event types" —
+  consumers couldn't actually pick which type they wanted without
+  JSON-parsing every frame. Backwards-compatible — old consumers
+  that only read `data:` lines still work.
+- **`SSEStreamAdapter` survives a disconnected consumer**. The
+  producer used to block 5s per `send_event` (and the queue's
+  `put(None)` in `finish()` blocked forever) when the HTTP client
+  vanished mid-stream. `put_timeout` is now 1s, the adapter
+  silently no-ops further events on first timeout, and `finish()`'s
+  sentinel is best-effort. Net effect: `run_stream` returns in
+  ~0.1s with a dead consumer instead of deadlocking.
+- **SSE answer duplication**. Streamed answers were emitted once
+  during the direct/streaming path AND again at the end via
+  `_stream_answer`. Now the framework tracks whether the chosen
+  execution path already streamed and skips the re-emit, only
+  sending `answer_end` to mark completion.
+- **`LayeredMemory.flush_l2_to_l3()`** and `TopicChangeHook` now
+  actually flush. The hook detected topic changes and called
+  `summarize()`, but with L2 not yet overflowed L3 was empty and
+  summarize silently no-op'd. Old topic kept bleeding into the new
+  one via L2 replay. The hook now flushes L2 → L3 before calling
+  summarize so the topic boundary actually fires.
+- **`LLMHook.parse_response` tolerates real-world LLM output**. Models
+  wrap JSON in `​```json … ```` fences or surround it with prose;
+  parsing now tries three strategies (raw, fenced, embedded `{...}`)
+  before giving up. Total parse failure logs a WARNING (was silent).
+- **MCP error format**. `MCPClientError` for tools/call errors now
+  reads `(code -32000): intentional server error` instead of the dict
+  repr `{'code': -32000, 'message': '…'}` — easier for the LLM
+  observation channel to reason about.
+
+### Fixed — error handling & input validation
+
 - **`OpenAICompatibleProvider` now fails fast at construction time** with
   a clear actionable message — `pip install 'swiftagentx[openai]'` — when
   `httpx` is missing, instead of crashing on the first chat() call with
   the misleading `ModuleNotFoundError: No module named 'requests'`.
   (Dogfood Friction #3.)
-- **`AgentResponse.metadata` now exposes `error_class` and
-  `error_message`** on every exception, even when `config.debug=False`.
-  Previously the user-facing answer was `"Sorry, an internal error
-  occurred"` and metadata was an empty dict — leaving callers no way to
-  branch on the failure mode. With `debug=True`, a full traceback is
-  also attached as `metadata["traceback"]`. (Dogfood Friction #4.)
-- **README's top-of-file benchmark reproduce command now prefixes with
-  `git clone` + `pip install -e ".[dev,openai,benchmark]"`** so a fresh
-  reader can actually run it. The previous version expected the
-  repo to already be local. (Dogfood Friction #1.)
+- **`AgentResponse.metadata` now exposes `error_class` and (only when
+  `config.debug=True`) `error_message` + `traceback`** on every
+  exception. Previously the user-facing answer was `"Sorry, an internal
+  error occurred"` and metadata was empty. `debug=False` no longer
+  leaks raw exception strings into metadata (regression caught by
+  Round 3 dogfood).
+- **Input-validation failures now return an `AgentResponse` with
+  `metadata={"input_rejected": True, "error_class": "ValueError"}`**
+  instead of raising `ValueError` out of `run()` / `run_stream()`. A
+  web handler that didn't wrap the call in try/except would otherwise
+  return a 500 with a leaky stack trace.
+- **`StageAction` is now exported from the top-level package.** README
+  pointed at `from swiftagentx import StageAction` but only
+  `PipelineStage`, `RequestPipeline`, `StageResult` were re-exported —
+  the example was broken.
+- **Skill markdown with unclosed YAML frontmatter raises a clear
+  `ValueError`** naming the missing closing `---`. Previously the
+  whole frontmatter block was silently treated as body, the skill's
+  `name` defaulted to its filename, and `description` was lost
+  without warning.
+
+### Changed
+
+- The `[openai]` extra now installs `httpx[socks]>=0.25.0` instead of
+  plain `httpx`. This pulls in `socksio` so users behind a SOCKS proxy
+  (common in mainland China deployments — explicitly called out in the
+  project's `CLAUDE.md` policies) don't crash on the first request with
+  `ImportError: Using SOCKS proxy, but the 'socksio' package is not
+  installed`.
+
+### Docs
+
+- README's "OpenAI-Compatible API" Quick Start now prefaces with the
+  required extras install and the China-mainland proxy gotcha — the
+  two things that block a new user inside 60 seconds.
+- README gains a "Multi-turn conversations" section explicitly showing
+  the default-session pattern and when to pass an explicit `session_id`.
+- README's "LLM_API_KEY" placeholder replaced with three concrete
+  provider examples (OpenAI / DashScope active / DeepSeek), so users
+  can copy-paste a working configuration.
+- README's Lifecycle Hooks section split into "A. Subclass Agent"
+  (the 7 subclass hooks) and "B. HookRegistry" (12 declarative event
+  names) so both extension patterns are discoverable.
+- Both English and Chinese sections updated in lockstep.
+
+### Tests
+
+195 (v0.3.0) → 211 (v0.3.1). Sixteen new regression tests cover the
+default session, error metadata, OpenAI provider import-error path,
+ReAct duplicate-action guard, Scenario template substitution + direct
+output, middleware short-circuit, FastAPI admin mounting, every
+HookEvent firing, multi-kwarg ToolChainStep, disconnected SSE
+consumer, input validation, and stream `send_event` post-finish
+silent-drop.
 
 ### Changed
 
