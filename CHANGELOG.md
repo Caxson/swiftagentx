@@ -6,6 +6,8 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-05-28
+
 ### Added
 
 - **Scenarios now extract their template slots from natural language.**
