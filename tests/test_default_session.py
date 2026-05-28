@@ -303,6 +303,96 @@ async def test_scenario_direct_output_returns_tool_result() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Round 7 — Scenario slots extracted from natural language
+# ---------------------------------------------------------------------------
+
+
+def test_scenario_required_vars_extraction() -> None:
+    """required_vars() = $vars in templates, minus reserved + step-produced."""
+    from swiftagentx import ScenarioConfig, ToolChainStep
+    sc = ScenarioConfig(
+        name="x", triggers=[],
+        tool_chain=[
+            ToolChainStep(tool="weather", kwargs_template={"city": "$city"}),
+            ToolChainStep(tool="fmt", query_template="$temp", extract_to="report"),
+            ToolChainStep(tool="use", query_template="$report"),  # produced → not required
+            ToolChainStep(tool="echo", query_template="$user_input"),  # reserved → excluded
+        ],
+    )
+    assert sc.required_vars() == {"city", "temp"}
+
+
+def test_router_parses_slots_from_classification() -> None:
+    from swiftagentx.core.router import IntentLevel, IntentRouter
+    r = IntentRouter()
+    r.register_scenarios({"weather": {"name": "w", "slots": ["city"]}})
+    res = r._parse_classification('level=2 scenario=weather slots={"city": "北京"}')
+    assert res.level == IntentLevel.SCENARIO
+    assert res.scenario == "weather"
+    assert res.slots == {"city": "北京"}  # original case/CJK preserved
+
+
+@pytest.mark.asyncio
+async def test_scenario_slot_extracted_from_natural_language() -> None:
+    """The classifier's extracted slots fill `$templates` WITHOUT the caller
+    passing them as run() kwargs — so a Scenario fires from plain language
+    like '北京天气怎么样' (dogfood Round 7)."""
+    from swiftagentx import ScenarioConfig, ToolChainStep
+    from swiftagentx.core.router import IntentLevel, IntentResult
+
+    class _SlotAgent(Agent):
+        async def _classify_intent(self, user_input: str, context: Any):  # type: ignore[override]
+            return IntentResult(level=IntentLevel.SCENARIO, scenario="weather",
+                                slots={"city": "Beijing"}, confidence=1.0)
+
+    agent = _SlotAgent(
+        model=DummyModelClient(api_key="k", model="d"),
+        config=SwiftAgentConfig(memory_enable_topic_change_hook=False,
+                                enable_cache=False),
+    )
+    tool = _RecordingTool()
+    agent.tool_registry.register(tool)  # type: ignore[arg-type]
+    agent.register_scenario("weather", ScenarioConfig(
+        name="weather", description="weather lookup", triggers=["weather"],
+        tool_chain=[ToolChainStep(tool="lookup", query_template="$city")],
+        output_type="direct",
+    ))
+
+    # No city= kwarg — the slot comes purely from classification.
+    resp = await agent.run("北京天气怎么样")
+    assert tool.invocations == [{"query": "Beijing"}], tool.invocations
+    assert "GOT: Beijing" in resp.answer
+
+
+def test_scenario_downgrades_to_react_when_slot_missing() -> None:
+    """A scenario whose required slot the classifier couldn't fill must fall
+    back to ReAct instead of firing a step with an unsubstituted $var."""
+    from swiftagentx import ScenarioConfig, ToolChainStep
+    from swiftagentx.core.router import IntentLevel, IntentResult
+    from swiftagentx.models.schema import SessionContext
+
+    agent = Agent(
+        model=DummyModelClient(api_key="k", model="d"),
+        config=SwiftAgentConfig(memory_enable_topic_change_hook=False,
+                                enable_cache=False),
+    )
+    agent.register_scenario("weather", ScenarioConfig(
+        name="weather", description="weather lookup", triggers=["weather"],
+        tool_chain=[ToolChainStep(tool="lookup", query_template="$city")],
+        output_type="direct",
+    ))
+    ctx = SessionContext(session_id="s", user_id="u", user_input="weather please")
+
+    missing = IntentResult(level=IntentLevel.SCENARIO, scenario="weather", slots={})
+    assert agent._resolve_execution_level(missing, ctx) == IntentLevel.REACT
+
+    filled = IntentResult(level=IntentLevel.SCENARIO, scenario="weather",
+                          slots={"city": "Beijing"})
+    assert agent._resolve_execution_level(filled, ctx) == IntentLevel.SCENARIO
+    assert ctx.get_variable("city") == "Beijing"  # slot merged into context
+
+
+# ---------------------------------------------------------------------------
 # Friction #9 — Middleware chain must actually execute around run()
 # ---------------------------------------------------------------------------
 

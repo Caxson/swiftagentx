@@ -29,6 +29,7 @@ class IntentResult(BaseModel):
     """Result of intent classification."""
     level: IntentLevel
     scenario: str | None = None
+    slots: dict[str, str] = {}
     confidence: float = 0.0
     raw_output: str = ""
     metadata: dict[str, Any] = {}
@@ -49,11 +50,18 @@ class IntentRouter:
         self._classification_prompt_template = (
             "Classify the user's intent into one of three levels:\n"
             "- level=1: Needs multi-step tool calls (e.g., complex queries, calculations)\n"
-            "- level=2: Matches a scenario: {scenario_list}\n"
+            "- level=2: Matches one of these scenarios: {scenario_list}\n"
             "- level=3: Can be answered directly without tools\n\n"
             "User input: {user_input}\n\n"
-            "Respond with ONLY: level=N scenario=name\n"
-            "If level is not 2, omit the scenario part."
+            "Respond with ONLY one line:\n"
+            "  level=N scenario=<name> slots={{\"key\": \"value\"}}\n"
+            "Rules:\n"
+            "- Include scenario= and slots= ONLY when level=2.\n"
+            "- A scenario's needed slots are shown after it as [slots: ...]. "
+            "Extract those values from the user input into the slots JSON "
+            "object. Omit any slot whose value isn't present.\n"
+            "- If level is 1 or 3, output just 'level=N'.\n"
+            "Example: level=2 scenario=weather_query slots={{\"city\": \"北京\"}}"
         )
 
     def set_classification_prompt(self, template: str) -> None:
@@ -79,7 +87,7 @@ class IntentRouter:
             return IntentResult(level=IntentLevel.DIRECT, confidence=0.5, raw_output="no model provided")
 
         scenario_list = ", ".join(
-            f"{sid}({info.get('name', sid) if isinstance(info, dict) else sid})"
+            self._format_scenario_for_prompt(sid, info)
             for sid, info in self._scenarios.items()
         )
 
@@ -99,12 +107,23 @@ class IntentRouter:
             logger.error(f"Intent classification failed: {e}", exc_info=True)
             return IntentResult(level=IntentLevel.DIRECT, confidence=0.3, raw_output=str(e))
 
+    @staticmethod
+    def _format_scenario_for_prompt(sid: str, info: Any) -> str:
+        """Render one scenario for the classifier prompt, with its slots."""
+        if isinstance(info, dict):
+            name = info.get("name", sid)
+            slots = info.get("slots") or []
+            slot_str = f" [slots: {', '.join(slots)}]" if slots else ""
+            return f"{sid}({name}){slot_str}"
+        return f"{sid}({info})"
+
     def _parse_classification(self, raw_output: str) -> IntentResult:
         """Parse LLM output into IntentResult."""
         raw = raw_output.strip().lower()
 
         level = IntentLevel.DIRECT
         scenario = None
+        slots: dict[str, str] = {}
         confidence = 0.5
 
         if "level=1" in raw:
@@ -120,6 +139,10 @@ class IntentRouter:
                 scenario = match.group(1)
                 if scenario in self._scenarios:
                     confidence = 0.9
+                    # Slots are parsed from the ORIGINAL (case-preserving)
+                    # output — lowercasing would mangle values like city
+                    # names or IDs.
+                    slots = self._parse_slots(raw_output)
                 else:
                     # Scenario not found, fall back to REACT
                     level = IntentLevel.REACT
@@ -132,6 +155,39 @@ class IntentRouter:
         return IntentResult(
             level=level,
             scenario=scenario,
+            slots=slots,
             confidence=confidence,
             raw_output=raw_output,
         )
+
+    @staticmethod
+    def _parse_slots(raw_output: str) -> dict[str, str]:
+        """Pull ``slots={...}`` out of the classifier output, tolerantly.
+
+        Small/cheap classification models don't always emit clean JSON, so
+        we try ``json.loads`` on the ``{...}`` blob first and fall back to a
+        forgiving ``key:value`` / ``key=value`` pair scan.
+        """
+        import json
+        import re
+
+        m = re.search(r"slots\s*=\s*(\{.*?\})", raw_output, re.DOTALL)
+        if not m:
+            return {}
+        blob = m.group(1)
+        try:
+            data = json.loads(blob)
+            if isinstance(data, dict):
+                return {
+                    str(k): str(v).strip()
+                    for k, v in data.items()
+                    if v not in (None, "")
+                }
+        except (json.JSONDecodeError, ValueError):
+            pass
+        out: dict[str, str] = {}
+        for key, value in re.findall(r'"?(\w+)"?\s*[:=]\s*"?([^",}]+)"?', blob):
+            value = value.strip()
+            if value:
+                out[key] = value
+        return out

@@ -6,6 +6,21 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+### Added
+
+- **Scenarios now extract their template slots from natural language.**
+  A `ToolChainStep(tool="weather", kwargs_template={"city": "$city"})`
+  previously only worked if the caller pre-parsed the city and passed it
+  as `agent.run(text, city="北京")`. Now the intent classifier extracts
+  declared slots in the *same* classification call, so a user typing
+  "北京天气怎么样" fires the scenario with `city=北京` automatically —
+  the headline Scenario feature finally works end-to-end from a chat UI,
+  still at one LLM call. New `ScenarioConfig.required_vars()` computes
+  which `$slots` a scenario needs (excluding reserved keys and vars
+  produced mid-chain by `extract_to`). If the classifier can't fill a
+  required slot, the request gracefully falls back to ReAct instead of
+  firing a step with an unsubstituted `$var`.
+
 ## [0.3.1] — 2026-05-28
 
 A dogfood-driven patch release. Took the v0.3.0 README and tried to

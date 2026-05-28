@@ -48,6 +48,32 @@ class ScenarioConfig(BaseModel):
     output_template: str = "llm"
     output_type: str = "llm_processed"  # "direct" | "llm_processed"
 
+    def required_vars(self) -> set[str]:
+        """Template variables this scenario must be given from outside.
+
+        Scans every step's ``query_template`` / ``kwargs_template`` for
+        ``$name`` tokens, then subtracts (a) reserved keys always supplied
+        by the agent and (b) any var produced by an earlier step's
+        ``extract_to`` (those are filled mid-chain, not by the user).
+
+        The agent uses this to know which slots to extract from natural
+        language so a Scenario like ``weather(city=$city)`` actually fires
+        when the user just types "北京天气怎么样" — without the caller
+        having to pre-parse ``city`` and pass it as a kwarg.
+        """
+        import re
+
+        reserved = {"user_input", "user_id", "session_id"}
+        produced = {s.extract_to for s in self.tool_chain if s.extract_to}
+        names: set[str] = set()
+        for step in self.tool_chain:
+            templates = list(step.kwargs_template.values())
+            if step.query_template:
+                templates.append(step.query_template)
+            for tmpl in templates:
+                names.update(re.findall(r"\$(\w+)", tmpl))
+        return names - reserved - produced
+
 
 class ScenarioEngine:
     """

@@ -453,7 +453,15 @@ class Agent:
 
     def register_scenario(self, scenario_id: str, scenario: ScenarioConfig) -> None:
         self.scenario_engine.register(scenario_id, scenario)
-        self.router.register_scenarios({scenario_id: {"name": scenario.name, "description": scenario.description}})
+        # Hand the scenario's required template slots to the router so the
+        # classifier can extract them from natural language in the same
+        # LLM call — otherwise a Scenario like weather(city=$city) can only
+        # fire when the caller pre-parses `city` and passes it as a kwarg.
+        self.router.register_scenarios({scenario_id: {
+            "name": scenario.name,
+            "description": scenario.description,
+            "slots": sorted(scenario.required_vars()),
+        }})
 
     def use(self, middleware: Middleware) -> None:
         self._middleware_chain.add(middleware)
@@ -699,10 +707,13 @@ class Agent:
                 scenario=intent.scenario,
             )
 
-            # Execute based on intent
-            if intent.level == IntentLevel.SCENARIO and intent.scenario:
+            # Execute based on intent. Merge any classifier-extracted
+            # slots into context vars and downgrade SCENARIO→REACT if a
+            # required template slot is still missing.
+            exec_level = self._resolve_execution_level(intent, context)
+            if exec_level == IntentLevel.SCENARIO and intent.scenario:
                 answer = await self._execute_scenario(intent.scenario, context)
-            elif intent.level == IntentLevel.REACT:
+            elif exec_level == IntentLevel.REACT:
                 answer = await self._react_loop(context)
             else:
                 answer = await self._direct_response(context)
@@ -878,9 +889,10 @@ class Agent:
             # _stream_answer or the client receives the answer twice
             # (dogfood Friction #8).
             answer_already_streamed = False
-            if intent.level == IntentLevel.SCENARIO and intent.scenario:
+            exec_level = self._resolve_execution_level(intent, context)
+            if exec_level == IntentLevel.SCENARIO and intent.scenario:
                 answer = await self._execute_scenario(intent.scenario, context)
-            elif intent.level == IntentLevel.REACT:
+            elif exec_level == IntentLevel.REACT:
                 answer = await self._react_loop(context, adapter)
                 # _react_loop streams thoughts/actions/observations but
                 # currently does NOT stream the final answer token-by-token,
@@ -1200,6 +1212,40 @@ class Agent:
 
         response = await model.chat([{"role": "user", "content": prompt}])
         return response.content
+
+    def _resolve_execution_level(
+        self, intent: IntentResult, context: SessionContext
+    ) -> IntentLevel:
+        """Merge classifier-extracted slots into context vars, then decide
+        the execution path.
+
+        A SCENARIO intent is downgraded to REACT when the matched scenario
+        still has required template slots that the classifier couldn't fill
+        from the user input — better to spend the extra LLM calls and
+        actually answer than to fire a scenario step with an unsubstituted
+        ``$city`` and fail. Scenarios with all slots satisfied (or no slots
+        at all) keep the fast 1-LLM-call path.
+        """
+        if intent.level != IntentLevel.SCENARIO or not intent.scenario:
+            return intent.level
+
+        for key, value in (intent.slots or {}).items():
+            if value:
+                context.set_variable(key, value)
+
+        scenario = self.scenario_engine.get(intent.scenario)
+        if scenario is not None:
+            missing = [
+                name for name in scenario.required_vars()
+                if not context.get_variable(name)
+            ]
+            if missing:
+                logger.info(
+                    "Scenario '%s' missing slot(s) %s after classification — "
+                    "falling back to ReAct.", intent.scenario, missing,
+                )
+                return IntentLevel.REACT
+        return IntentLevel.SCENARIO
 
     async def _execute_scenario(self, scenario_id: str, context: SessionContext) -> str:
         """Execute a pre-defined scenario toolchain.
