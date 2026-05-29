@@ -6,6 +6,16 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+### Docs
+
+- README: added a rendered tiered-execution architecture diagram
+  (`docs/assets/architecture-flow.png`), turned the Features list into an
+  icon table, and refreshed the benchmark numbers + chart against measured
+  swiftagentx 0.3.3 data (20 iterations/scenario). The latency chart now
+  labels every bar, so the two sub-millisecond tiers (cache / KB hit) are
+  finally legible on the log scale instead of squashed to the axis floor.
+- Corrected the stale "195 tests" comparison-table figure to 218.
+
 ## [0.3.3] — 2026-05-29
 
 ### Fixed

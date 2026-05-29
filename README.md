@@ -50,18 +50,23 @@ production.
 ## Tiered execution
 
 Scenarios sit in the middle of a four-tier execution model. **All numbers
-below are measured against DashScope Qwen — 30 iterations per scenario,
-LIGHT=`qwen-flash`, HEAVY=`qwen-turbo`. Reproducible from this repo with
-one command** (see [`benchmarks/`](benchmarks/)).
+below are measured against DashScope Qwen — 20 iterations per scenario,
+LIGHT=`qwen-flash`, HEAVY=`qwen-turbo` (v0.3.3). Reproducible from this
+repo with one command** (see [`benchmarks/`](benchmarks/)).
 
-![SwiftAgentX benchmark — latency and LLM calls per execution tier, DashScope Qwen, 30 iterations per scenario](docs/assets/v0.3-benchmark-qwen.png)
+![SwiftAgentX benchmark — latency and LLM calls per execution tier, DashScope Qwen, 20 iterations per scenario](docs/assets/v0.3-benchmark-qwen.png)
 
 | Request type | Path | P50 latency | P95 | LLM calls |
 |---|---|---:|---:|---:|
-| KB exact match / cache hit | Pipeline short-circuit | **0 ms** | 0 ms | **0** |
-| **Known intent (Scenario)** | **Pre-compiled tool chain** | **517 ms** | 802 ms | **1** (LIGHT only) |
-| Open conversation | Direct LLM | 1.4 s | 2.4 s | 2 (LIGHT + HEAVY) |
-| Multi-step reasoning | Full ReAct loop | 3.1 s | 4.0 s | 3 |
+| KB exact match / cache hit | Pipeline short-circuit | **0.02 ms** | 0.1 ms | **0** |
+| **Known intent (Scenario)** | **Pre-compiled tool chain** | **526 ms** | 1.6 s | **1** (LIGHT only) |
+| Open conversation | Direct LLM | 1.2 s | 2.4 s | 2–3 |
+| Multi-step reasoning | Full ReAct loop | 1.8 s | 2.6 s | 2–3 |
+
+<sub>Measured 2026-05-29 on swiftagentx 0.3.3, 20 iterations/scenario. The
+two cheap tiers (cache + scenario) cost **0–1 LLM calls** — that's the
+headline. The ReAct dedup guard keeps multi-step loops short, so even the
+deepest tier rarely pays for more than 2–3 calls.</sub>
 
 A LIGHT model picks the path. A HEAVY model only runs when the request
 genuinely needs open-ended reasoning. The two cheap tiers (cache + scenario)
@@ -102,7 +107,7 @@ cheap, but each step can reach into the full agent toolkit when needed.
 | Pipeline stage short-circuit (KB / security / feature flags) | ✅ | DIY | ❌ | ❌ |
 | Streaming with fine-grained event types | ✅ 12 types | ✅ | partial | ✅ |
 | Framework-agnostic core (no HTTP in `core/`) | ✅ | n/a | n/a | n/a |
-| Test suite size | 195 tests, **< 0.5 s** | huge | huge | medium |
+| Test suite size | 218 tests, **< 0.5 s** | huge | huge | medium |
 
 LangChain is broader. SwiftAgentX is sharper for the predictable-traffic
 production patterns where latency and per-request LLM cost actually move
@@ -126,28 +131,18 @@ the unit of design, read on.
 
 ## Features
 
-- **Scenarios** — Pre-compiled execution paths that skip the ReAct loop on
-  known intents. The framework's headline abstraction. Each step in a
-  scenario chain can be a Python tool, an MCP tool, or a conditional hook.
-- **Tiered execution** — Pipeline short-circuit → Scenario → ReAct → Direct,
-  picked per request by a LIGHT classifier.
-- **Dual-model routing** — `ModelTier.LIGHT` for intent classification,
-  `ModelTier.HEAVY` for reasoning. ~30× cost spread on real providers.
-- **Three-level cache** — KB exact match (global), tool result (per-user),
-  session variables. Independent TTLs, periodic cleanup.
-- **Pipeline stages** — Insert KB short-circuit, security checks, feature
-  flags, or any custom logic before the cache/route step. Stages can
-  CONTINUE, SHORT_CIRCUIT, or ABORT.
-- **Knowledge base ABC** — Built-in TF-IDF `MemoryKnowledgeBase` for local
-  dev; bring your own (Weaviate, Elasticsearch, pgvector) via a 3-method ABC.
-- **SSE streaming** — 12 event types (`THINKING`, `ACTION`, `OBSERVATION`,
-  `ANSWER`, etc.) with heartbeats.
-- **Admin API** — Status, tools, cache, config, KB endpoints as Flask
-  blueprint *and* FastAPI router. Framework-agnostic core.
-- **Middleware pipeline** — Tracing, retries, input validation, error
-  sanitization. Hook into any stage.
-- **No HTTP in core** — `httpx` is optional. You can run SwiftAgentX in
-  a Lambda, a Celery worker, or a notebook.
+| | Feature | What it does |
+|:--:|---|---|
+| 🎯 | **Scenarios** | Pre-compiled execution paths that skip the ReAct loop on known intents — the headline abstraction. Each chain step is a Python tool, an MCP tool, or a conditional hook. |
+| 🪜 | **Tiered execution** | Pipeline short-circuit → Scenario → ReAct → Direct, picked per request by a LIGHT classifier. |
+| ⚖️ | **Dual-model routing** | `ModelTier.LIGHT` for classification, `ModelTier.HEAVY` for reasoning — ~30× cost spread on real providers. |
+| ⚡ | **Three-level cache** | KB exact match (global), tool result (per-user), session variables. Independent TTLs, periodic cleanup. |
+| 🚦 | **Pipeline stages** | KB short-circuit, security checks, feature flags, or any custom logic before cache/route. Stages CONTINUE, SHORT_CIRCUIT, or ABORT. |
+| 📚 | **Knowledge base ABC** | Built-in TF-IDF `MemoryKnowledgeBase` for local dev; bring your own (Weaviate, Elasticsearch, pgvector) via a 3-method ABC. |
+| 📡 | **SSE streaming** | 12 event types (`THINKING`, `ACTION`, `OBSERVATION`, `ANSWER`, …) with heartbeats. |
+| 🛠️ | **Admin API** | Status, tools, cache, config, KB endpoints as a Flask blueprint *and* a FastAPI router. Framework-agnostic core. |
+| 🧅 | **Middleware pipeline** | Tracing, retries, input validation, error sanitization. Hook into any stage. |
+| 🪶 | **No HTTP in core** | `httpx` is optional — run SwiftAgentX in a Lambda, a Celery worker, or a notebook. |
 
 ## What's next (v0.3 roadmap)
 
@@ -522,6 +517,16 @@ agent = Agent(
 
 ## Architecture
 
+![SwiftAgentX tiered execution flow — request descends through Pipeline short-circuit → Cache → Intent classification, branching to Scenario / Direct / ReAct, with LLM-call count and latency per path](docs/assets/architecture-flow.png)
+
+A request descends through the tiers and **stops at the shallowest one that
+can answer it** — cache and KB hits return with zero LLM calls, known intents
+fire a pre-compiled Scenario for one, and only genuinely open-ended requests
+pay for the full ReAct loop.
+
+<details>
+<summary>Full execution pipeline (text)</summary>
+
 ```
 User Request
     |
@@ -552,6 +557,8 @@ User Request
     v
 [SSE Stream / Response]
 ```
+
+</details>
 
 ### Three-Level Cache
 
@@ -643,17 +650,21 @@ LangChain / AutoGen / CrewAI 的地方。
 ## 分层执行
 
 Scenario 位于四层执行模型的中央。**所有数据用 DashScope Qwen 实测——
-每个场景 30 次迭代，LIGHT=`qwen-flash`，HEAVY=`qwen-turbo`，一行命令
-就能在你自己机器上复现**（见 [`benchmarks/`](benchmarks/)）。
+每个场景 20 次迭代，LIGHT=`qwen-flash`，HEAVY=`qwen-turbo`（v0.3.3），
+一行命令就能在你自己机器上复现**（见 [`benchmarks/`](benchmarks/)）。
 
-![SwiftAgentX benchmark — DashScope Qwen 实测 30 次迭代，按执行路径分层](docs/assets/v0.3-benchmark-qwen.png)
+![SwiftAgentX benchmark — DashScope Qwen 实测 20 次迭代，按执行路径分层](docs/assets/v0.3-benchmark-qwen.png)
 
 | 请求类型 | 执行路径 | P50 延迟 | P95 | LLM 调用次数 |
 |---|---|---:|---:|---:|
-| 缓存命中 / KB 精准匹配 | Pipeline 短路 | **0 ms** | 0 ms | **0** |
-| **已知意图（Scenario）** | **预编译工具链** | **517 ms** | 802 ms | **1**（仅 LIGHT） |
-| 开放式对话 | 直接 LLM 回复 | 1.4 s | 2.4 s | 2（LIGHT + HEAVY） |
-| 多步推理 | 完整 ReAct 循环 | 3.1 s | 4.0 s | 3 |
+| 缓存命中 / KB 精准匹配 | Pipeline 短路 | **0.02 ms** | 0.1 ms | **0** |
+| **已知意图（Scenario）** | **预编译工具链** | **526 ms** | 1.6 s | **1**（仅 LIGHT） |
+| 开放式对话 | 直接 LLM 回复 | 1.2 s | 2.4 s | 2–3 |
+| 多步推理 | 完整 ReAct 循环 | 1.8 s | 2.6 s | 2–3 |
+
+<sub>实测于 2026-05-29，swiftagentx 0.3.3，每场景 20 次迭代。两个廉价层
+（缓存 + Scenario）只花 **0–1 次 LLM 调用**——这就是核心卖点。ReAct
+去重护栏让多步循环保持精简，最深的一层也很少超过 2–3 次调用。</sub>
 
 LIGHT 模型挑路径。HEAVY 模型只在请求确实需要开放式推理时才启动。
 两条便宜的路径（缓存 + Scenario）合起来覆盖生产环境绝大多数可预测的流量，
@@ -692,7 +703,7 @@ Scenario 不只是一个静态工具列表。链中的步骤可以是：
 | Pipeline 阶段短路（KB / 安全 / 功能开关） | ✅ | 自己写 | ❌ | ❌ |
 | 流式细粒度事件类型 | ✅ 12 种 | ✅ | 部分 | ✅ |
 | 框架无关核心（`core/` 不依赖 HTTP） | ✅ | n/a | n/a | n/a |
-| 测试套件 | 195 个测试，**< 0.5 秒** | 庞大 | 庞大 | 中等 |
+| 测试套件 | 218 个测试，**< 0.5 秒** | 庞大 | 庞大 | 中等 |
 
 LangChain 更广。SwiftAgentX 更专——专于流量可预测、延迟和单次
 LLM 成本是命门的生产场景。
@@ -710,25 +721,18 @@ LLM 成本是命门的生产场景。
 
 ## 核心特性
 
-- **Scenario** — 在已知意图上跳过 ReAct 循环的预编译执行路径。框架的
-  头号抽象。Scenario 链中每一步都可以是 Python tool、MCP tool、或条件 hook。
-- **分层执行** — Pipeline 短路 → Scenario → ReAct → Direct，由 LIGHT
-  分类器为每个请求挑路径。
-- **双模型路由** — `ModelTier.LIGHT` 做意图分类，`ModelTier.HEAVY` 做
-  推理。在真实 provider 上有 ~30× 的成本差。
-- **三级缓存** — KB 精准匹配（全局）、工具结果（按用户）、会话变量。
-  各自独立 TTL，周期清理。
-- **Pipeline 阶段** — 在 cache/route 之前插入 KB 短路、安全检查、功能开关
-  等任何自定义逻辑。阶段可返回 CONTINUE / SHORT_CIRCUIT / ABORT。
-- **知识库 ABC** — 内置 TF-IDF `MemoryKnowledgeBase` 用于本地开发；通过
-  3 方法 ABC 对接 Weaviate / Elasticsearch / pgvector。
-- **SSE 流式** — 12 种事件类型（`THINKING` / `ACTION` / `OBSERVATION` /
-  `ANSWER` 等），带心跳保活。
-- **管理后台** — Status、tools、cache、config、KB 端点，Flask Blueprint
-  *和* FastAPI Router 都内置。核心层框架无关。
-- **中间件流水线** — 追踪、重试、输入验证、错误脱敏，每个阶段都能挂 hook。
-- **核心层无 HTTP 依赖** — `httpx` 是可选项，可以在 Lambda、Celery worker、
-  或 Notebook 里跑 SwiftAgentX。
+| | 特性 | 说明 |
+|:--:|---|---|
+| 🎯 | **Scenario** | 在已知意图上跳过 ReAct 循环的预编译执行路径——框架头号抽象。链中每一步可以是 Python tool、MCP tool 或条件 hook。 |
+| 🪜 | **分层执行** | Pipeline 短路 → Scenario → ReAct → Direct，由 LIGHT 分类器为每个请求挑路径。 |
+| ⚖️ | **双模型路由** | `ModelTier.LIGHT` 做分类，`ModelTier.HEAVY` 做推理——真实 provider 上 ~30× 成本差。 |
+| ⚡ | **三级缓存** | KB 精准匹配（全局）、工具结果（按用户）、会话变量。各自独立 TTL，周期清理。 |
+| 🚦 | **Pipeline 阶段** | cache/route 之前插入 KB 短路、安全检查、功能开关等自定义逻辑。阶段可返回 CONTINUE / SHORT_CIRCUIT / ABORT。 |
+| 📚 | **知识库 ABC** | 内置 TF-IDF `MemoryKnowledgeBase` 本地开发；通过 3 方法 ABC 对接 Weaviate / Elasticsearch / pgvector。 |
+| 📡 | **SSE 流式** | 12 种事件类型（`THINKING` / `ACTION` / `OBSERVATION` / `ANSWER` 等），带心跳保活。 |
+| 🛠️ | **管理后台** | Status、tools、cache、config、KB 端点，Flask Blueprint *和* FastAPI Router 都内置，核心层框架无关。 |
+| 🧅 | **中间件流水线** | 追踪、重试、输入验证、错误脱敏，每个阶段都能挂 hook。 |
+| 🪶 | **核心层无 HTTP 依赖** | `httpx` 可选——可在 Lambda、Celery worker 或 Notebook 里跑。 |
 
 ## 下一步（v0.3 路线图）
 
@@ -1092,6 +1096,15 @@ agent = Agent(
 
 ## 架构
 
+![SwiftAgentX 分层执行流程 — 请求逐层下探：Pipeline 短路 → 缓存 → 意图分类，再分流到 Scenario / Direct / ReAct，每条路径标注 LLM 调用次数与延迟](docs/assets/architecture-flow.png)
+
+请求逐层下探，**能在哪一层解决就在哪一层停**——缓存和 KB 命中 0 次 LLM
+直接返回，已知意图触发预编译 Scenario 只花 1 次，只有真正开放式的请求
+才付完整 ReAct 循环的代价。
+
+<details>
+<summary>完整执行管道（文本版）</summary>
+
 ```
 用户请求
     |
@@ -1122,6 +1135,8 @@ agent = Agent(
     v
 [SSE 流式 / 响应返回]
 ```
+
+</details>
 
 ### 三级缓存详解
 

@@ -409,8 +409,16 @@ def _emit_chart(results: list[ScenarioResult], path: Path) -> None:
 
     x = list(range(len(names)))
     width = 0.35
-    ax_lat.bar([i - width/2 for i in x], p50, width=width, label="P50", color="#0ea5e9")
-    ax_lat.bar([i + width/2 for i in x], p95, width=width, label="P95", color="#f59e0b")
+
+    def _fmt_latency(ms: float) -> str:
+        if ms >= 1000:
+            return f"{ms / 1000:.1f}s"
+        if ms >= 1:
+            return f"{ms:.0f}ms"
+        return f"{ms:.2f}ms"  # sub-millisecond tiers (cache / KB hit)
+
+    bars_p50 = ax_lat.bar([i - width/2 for i in x], p50, width=width, label="P50", color="#0ea5e9")
+    bars_p95 = ax_lat.bar([i + width/2 for i in x], p95, width=width, label="P95", color="#f59e0b")
     ax_lat.set_ylabel("Latency (ms, log scale)")
     ax_lat.set_yscale("log")
     ax_lat.set_xticks(x)
@@ -418,6 +426,15 @@ def _emit_chart(results: list[ScenarioResult], path: Path) -> None:
     ax_lat.set_title("SwiftAgentX real-LLM benchmark (DashScope Qwen)")
     ax_lat.legend()
     ax_lat.grid(True, axis="y", alpha=0.3)
+    # Value labels on every bar — without them the two sub-millisecond tiers
+    # (kb_exact_match, cache_hit) are squashed to the axis floor on the log
+    # scale and unreadable, which buries the framework's strongest result.
+    for bars, vals in ((bars_p50, p50), (bars_p95, p95)):
+        for rect, v in zip(bars, vals):
+            ax_lat.annotate(_fmt_latency(v),
+                            (rect.get_x() + rect.get_width() / 2, max(v, 1e-3)),
+                            ha="center", va="bottom", fontsize=7,
+                            xytext=(0, 2), textcoords="offset points")
 
     ax_calls.bar(x, calls, color="#d97706")
     ax_calls.set_ylabel("Avg LLM calls / request")
