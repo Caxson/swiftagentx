@@ -6,6 +6,8 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-05-29
+
 ### Fixed
 
 - **Scenario-level result cache now actually works

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "swiftagentx"
-version = "0.3.2"
+version = "0.3.3"
 description = "Production-grade Agent framework with sub-second latency via tiered execution: three-level cache, dual-model routing, and scenario toolchains."
 readme = "README.md"
 requires-python = ">=3.10"
