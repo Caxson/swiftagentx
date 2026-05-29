@@ -1261,6 +1261,28 @@ class Agent:
         ``HookEvent.BEFORE_SCENARIO_STEP`` / ``AFTER_SCENARIO_STEP`` so
         registered hooks fire per-step.
         """
+        extra_vars = {
+            **dict(context.variables),
+            "user_id": context.user_id,
+            "user_input": context.user_input,
+            "session_id": context.session_id,
+        }
+
+        # Scenario-level result cache. Opt-in: only scenarios that declared
+        # a `cache_key_template` (or a custom key builder) are cached. The
+        # key is semantic (e.g. `order_status_$user_id`), so it dedups
+        # across different *phrasings* of the same intent — which the
+        # request-level cache (keyed on raw input text) cannot. Previously
+        # `cache_key_template`/`cache_ttl` and `build_cache_key()` were dead
+        # code: declared and documented but never read (GitHub #1).
+        cache_on = self.config.enable_cache and self.scenario_engine.is_cacheable(scenario_id)
+        cache_key: str | None = None
+        if cache_on:
+            cache_key = self.scenario_engine.build_cache_key(scenario_id, extra_vars)
+            cached = self.cache.get_scenario_cache(scenario_id, cache_key)
+            if cached is not None:
+                return str(cached)
+
         async def _on_step(phase: str, step: Any, tool_kwargs: dict[str, Any],
                            output: Any) -> None:
             event = (HookEvent.BEFORE_SCENARIO_STEP if phase == "before"
@@ -1280,18 +1302,13 @@ class Agent:
 
         result = await self.scenario_engine.execute(
             scenario_id, context, self.tool_executor,
-            extra_vars={
-                **dict(context.variables),
-                "user_id": context.user_id,
-                "user_input": context.user_input,
-                "session_id": context.session_id,
-            },
+            extra_vars=extra_vars,
             step_callback=_on_step,
         )
 
         if result.success:
             if result.output_type == ToolOutputType.DIRECT_OUTPUT:
-                return str(result.result)
+                answer = str(result.result)
             else:
                 # Use heavy model to format the result
                 model = self.get_model(ModelTier.HEAVY)
@@ -1302,7 +1319,13 @@ class Agent:
                     "Generate a natural, helpful response."
                 )
                 response = await model.chat([{"role": "user", "content": prompt}])
-                return response.content
+                answer = response.content
+            # Only successful results are cached, with the scenario's own TTL.
+            if cache_on and cache_key is not None:
+                scenario = self.scenario_engine.get(scenario_id)
+                ttl = scenario.cache_ttl if scenario else 3600
+                self.cache.set_scenario_cache(scenario_id, cache_key, answer, ttl_seconds=ttl)
+            return answer
         else:
             return f"Sorry, I couldn't complete this request: {result.error}"
 

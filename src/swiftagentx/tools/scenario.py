@@ -118,6 +118,20 @@ class ScenarioEngine:
         """Match scenario by explicit ID (used when LLM classifies intent)."""
         return self._scenarios.get(scenario_id)
 
+    def is_cacheable(self, scenario_id: str) -> bool:
+        """Whether this scenario opted into result caching.
+
+        Caching is opt-in: only scenarios that declared a
+        ``cache_key_template`` (or registered a custom key builder) are
+        cached. A scenario that set neither is never cached, even though
+        ``cache_ttl`` has a non-zero default — otherwise we'd silently
+        cache scenarios the author never intended to.
+        """
+        if scenario_id in self._cache_key_builders:
+            return True
+        scenario = self._scenarios.get(scenario_id)
+        return bool(scenario and scenario.cache_key_template)
+
     def build_cache_key(self, scenario_id: str, context: dict[str, Any]) -> str:
         """Build cache key using custom builder or default template."""
         if scenario_id in self._cache_key_builders:

@@ -393,6 +393,90 @@ def test_scenario_downgrades_to_react_when_slot_missing() -> None:
 
 
 # ---------------------------------------------------------------------------
+# GitHub #1 — Scenario-level cache (cache_key_template + cache_ttl)
+# ---------------------------------------------------------------------------
+
+
+class _ChainCountTool:
+    """Tool that counts how many times its chain actually runs."""
+
+    def __init__(self) -> None:
+        from swiftagentx import ToolOutput, ToolOutputType
+        self._ToolOutput = ToolOutput
+        self.name = "lookup"
+        self.description = "counts runs"
+        self.category = "test"
+        self.output_type = ToolOutputType.LLM_PROCESSED
+        self.timeout_seconds = 5
+        self.max_retries = 1
+        self.calls = 0
+
+    def get_schema(self) -> dict[str, Any]:
+        return {"name": self.name, "description": self.description,
+                "parameters": {"type": "object", "properties": {}}}
+
+    def validate_input(self, **kwargs: Any) -> bool:
+        return True
+
+    async def execute(self, context: Any, **kwargs: Any):
+        self.calls += 1
+        return self._ToolOutput(success=True, result=f"run #{self.calls}")
+
+
+def _cache_scenario_agent(tool: _ChainCountTool, *, cache_key_template: str) -> Agent:
+    from swiftagentx import ScenarioConfig, ToolChainStep
+    agent = _ScenarioForceAgent(
+        "order_status",
+        model=DummyModelClient(api_key="k", model="d"),
+        config=SwiftAgentConfig(enable_cache=True,
+                                memory_enable_topic_change_hook=False),
+    )
+    agent.tool_registry.register(tool)  # type: ignore[arg-type]
+    agent.register_scenario("order_status", ScenarioConfig(
+        name="Order Status", triggers=["order"],
+        tool_chain=[ToolChainStep(tool="lookup", query_template="$user_id")],
+        cache_key_template=cache_key_template,
+        cache_ttl=1800,
+        output_type="direct",
+    ))
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_scenario_cache_dedups_across_phrasings() -> None:
+    """With cache_key_template set, the same semantic request (different
+    wording, same user) runs the tool chain once — the request-level cache
+    can't dedup these because the raw input differs (GitHub #1)."""
+    tool = _ChainCountTool()
+    agent = _cache_scenario_agent(tool, cache_key_template="order_status_$user_id")
+    for q in ["where is my order?", "order status please", "track my package"]:
+        await agent.run(q, user_id="u1", session_id="s1")
+    assert tool.calls == 1, f"expected 1 tool run (scenario-cached), got {tool.calls}"
+
+
+@pytest.mark.asyncio
+async def test_scenario_cache_is_opt_in() -> None:
+    """A scenario that did NOT declare a cache_key_template is never cached,
+    even though cache_ttl defaults to non-zero — caching is opt-in."""
+    tool = _ChainCountTool()
+    agent = _cache_scenario_agent(tool, cache_key_template="")  # no template
+    for q in ["q one", "q two", "q three"]:
+        await agent.run(q, user_id="u1", session_id="s1")
+    assert tool.calls == 3, f"expected no caching (opt-in), got {tool.calls} runs"
+
+
+@pytest.mark.asyncio
+async def test_scenario_cache_isolated_per_user() -> None:
+    """cache_key_template='..._$user_id' must not leak one user's cached
+    scenario result to another user."""
+    tool = _ChainCountTool()
+    agent = _cache_scenario_agent(tool, cache_key_template="order_status_$user_id")
+    await agent.run("where is my order?", user_id="alice", session_id="sa")
+    await agent.run("where is my order?", user_id="bob", session_id="sb")
+    assert tool.calls == 2, f"per-user keys should not share; got {tool.calls}"
+
+
+# ---------------------------------------------------------------------------
 # Friction #9 — Middleware chain must actually execute around run()
 # ---------------------------------------------------------------------------
 

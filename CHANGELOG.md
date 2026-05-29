@@ -6,6 +6,23 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Scenario-level result cache now actually works
+  ([#1](https://github.com/Caxson/swiftagentx/issues/1)).**
+  `ScenarioConfig.cache_key_template` / `cache_ttl` and
+  `ScenarioEngine.build_cache_key()` were declared and documented (the
+  README scenario examples set `cache_ttl`) but never read — pure dead
+  code. `Agent._execute_scenario()` now checks the scenario cache on
+  entry and stores successful results with the scenario's `cache_ttl`.
+  Caching is **opt-in**: only scenarios that declared a
+  `cache_key_template` (or a custom key builder) are cached, so scenarios
+  that didn't ask for it keep their previous no-cache behavior. The
+  semantic key (e.g. `order_status_$user_id`) dedups across *different
+  phrasings* of the same intent — something the request-level cache
+  (keyed on raw input text) cannot do. Keys are user-scoped, so one
+  user's cached result never leaks to another.
+
 ## [0.3.2] — 2026-05-28
 
 ### Added
