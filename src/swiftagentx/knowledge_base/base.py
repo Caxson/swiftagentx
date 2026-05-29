@@ -63,6 +63,6 @@ class KnowledgeBase(ABC):
         """Return the total number of documents. Override for optimized implementations."""
         return 0
 
-    async def close(self) -> None:
+    async def close(self) -> None:  # noqa: B027 — optional override, default no-op
         """Clean up resources. Override if your implementation needs cleanup."""
         pass

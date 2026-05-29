@@ -27,6 +27,6 @@ class StorageBackend(ABC):
     async def save_request_log(self, request_data: dict[str, Any]) -> bool:
         ...
 
-    async def close(self) -> None:
+    async def close(self) -> None:  # noqa: B027 — optional override, default no-op
         """Clean up resources."""
         pass

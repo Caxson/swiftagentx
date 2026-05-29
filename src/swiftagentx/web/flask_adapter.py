@@ -43,8 +43,8 @@ def create_flask_blueprint(
     try:
         from flask import Blueprint, Response, stream_with_context
         from flask import request as flask_request
-    except ImportError:
-        raise ImportError("Flask is required. Install with: pip install swiftagent[flask]")
+    except ImportError as exc:
+        raise ImportError("Flask is required. Install with: pip install swiftagent[flask]") from exc
 
     from ..models.schema import AgentRequest
     from ..stream.adapter import SSEStreamAdapter

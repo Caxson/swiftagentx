@@ -26,14 +26,12 @@ is async (e.g. closing an S3 client). Synchronous use is supported via
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 

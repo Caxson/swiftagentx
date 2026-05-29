@@ -12,7 +12,6 @@ Features:
 from .admin.service import AdminService
 from .core.agent import Agent
 from .core.cache import CacheManager
-from .core.memory import Message, SessionMemory
 from .core.hooks import (
     Hook,
     HookContext,
@@ -24,6 +23,7 @@ from .core.hooks import (
     SemanticHook,
     ShellHook,
 )
+from .core.memory import Message, SessionMemory
 from .core.memory_hooks import TopicChangeHook
 from .core.memory_layers import (
     DialogTurn,
@@ -34,7 +34,11 @@ from .core.memory_layers import (
     MemoryBackend,
     MemorySnapshot,
 )
+from .core.model_client import DummyModelClient, ModelClient, ModelClientFactory, ModelResponse
+from .core.pipeline import PipelineStage, RequestPipeline, StageAction, StageResult
+from .core.prompt import PromptManager, PromptTemplate
 from .core.prompt_layout import PromptLayout
+from .core.router import IntentLevel, IntentResult, IntentRouter
 from .core.skills import Skill, SkillRegistry, parse_skill_markdown
 from .core.subagent import (
     SubAgentInvocation,
@@ -50,11 +54,6 @@ from .core.workspace import (
     WorkspaceBackend,
     use_workspace,
 )
-from .providers.mcp import MCPClient, MCPClientError, MCPServerSpec, MCPTool
-from .core.model_client import DummyModelClient, ModelClient, ModelClientFactory, ModelResponse
-from .core.pipeline import PipelineStage, RequestPipeline, StageAction, StageResult
-from .core.prompt import PromptManager, PromptTemplate
-from .core.router import IntentLevel, IntentResult, IntentRouter
 from .knowledge_base.base import KnowledgeBase
 from .knowledge_base.document import Document, SearchResult
 from .knowledge_base.memory import MemoryKnowledgeBase
@@ -63,6 +62,7 @@ from .knowledge_base.tool import KnowledgeBaseTool
 from .middleware.base import Middleware, MiddlewareChain
 from .models.config import ModelTier, SwiftAgentConfig
 from .models.schema import AgentRequest, AgentResponse, SessionContext
+from .providers.mcp import MCPClient, MCPClientError, MCPServerSpec, MCPTool
 from .storage.base import StorageBackend
 from .storage.memory import MemoryStorage
 from .stream.adapter import SSEStreamAdapter

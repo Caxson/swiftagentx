@@ -29,8 +29,8 @@ def create_flask_admin_blueprint(
     """
     try:
         from flask import Blueprint, jsonify, request
-    except ImportError:
-        raise ImportError("Flask is required for the admin blueprint: pip install flask")
+    except ImportError as exc:
+        raise ImportError("Flask is required for the admin blueprint: pip install flask") from exc
 
     bp = Blueprint("swiftagent_admin", __name__, url_prefix=url_prefix)
 

@@ -19,7 +19,6 @@ import pytest
 
 from swiftagentx import Agent, DummyModelClient, SwiftAgentConfig
 
-
 # ---------------------------------------------------------------------------
 # Friction #5 — default session_id is per-Agent stable
 # ---------------------------------------------------------------------------
@@ -146,7 +145,7 @@ class _CountingTool:
     without importing Tool ABC (the agent looks it up by name)."""
 
     def __init__(self) -> None:
-        from swiftagentx import Tool, ToolOutput, ToolOutputType
+        from swiftagentx import ToolOutput, ToolOutputType
         self._ToolOutput = ToolOutput
         self._ToolOutputType = ToolOutputType
         self.name = "echo"
@@ -210,7 +209,7 @@ class _RecordingTool:
     """A Tool that records its kwargs so we can assert query_template substitution."""
 
     def __init__(self) -> None:
-        from swiftagentx import Tool, ToolOutput, ToolOutputType
+        from swiftagentx import ToolOutput, ToolOutputType
         self._ToolOutput = ToolOutput
         self._ToolOutputType = ToolOutputType
         self.name = "lookup"
@@ -727,7 +726,10 @@ async def test_scenario_kwargs_template_for_multi_param_tool() -> None:
     """An MCP-style tool taking multiple kwargs (a, b) should be drivable
     from a Scenario via `kwargs_template={"a": "$x", "b": "$y"}`."""
     from swiftagentx import (
-        ScenarioConfig, Tool, ToolChainStep, ToolOutput,
+        ScenarioConfig,
+        Tool,
+        ToolChainStep,
+        ToolOutput,
     )
 
     captured: list[dict[str, Any]] = []
@@ -783,6 +785,7 @@ async def test_run_stream_with_disconnected_consumer_finishes_fast() -> None:
     drop further events, instead of blocking 5s per send_event and
     raising a naked RuntimeError out of run_stream."""
     import time as _time
+
     from swiftagentx import AgentRequest, SSEStreamAdapter
     from swiftagentx.core.model_client import ModelClient, ModelResponse
 

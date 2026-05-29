@@ -30,8 +30,8 @@ def create_fastapi_router(agent: Any, prefix: str = "/api/v1/agent") -> Any:
     try:
         from fastapi import APIRouter
         from fastapi.responses import StreamingResponse
-    except ImportError:
-        raise ImportError("FastAPI is required. Install with: pip install swiftagent[fastapi]")
+    except ImportError as exc:
+        raise ImportError("FastAPI is required. Install with: pip install swiftagent[fastapi]") from exc
 
     from ..models.schema import AgentRequest
     from ..stream.adapter import SSEStreamAdapter

@@ -13,8 +13,6 @@ transport with a small echo-server script written inline.
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import sys
 from collections.abc import Iterable
 from typing import Any
@@ -28,7 +26,6 @@ from swiftagentx.providers.mcp.client import (
     MCPServerSpec,
 )
 from swiftagentx.providers.mcp.tool import MCPTool
-
 
 # ---------------------------------------------------------------------------
 # Fake transport — drives MCPClient deterministically

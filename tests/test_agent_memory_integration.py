@@ -29,7 +29,6 @@ from swiftagentx.core.hooks import (
 )
 from swiftagentx.core.memory_layers import LayeredMemory
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

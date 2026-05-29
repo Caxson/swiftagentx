@@ -25,9 +25,7 @@ from swiftagentx.core.memory_layers import (
     InMemoryBackend,
     LayeredMemory,
     LayeredMemoryConfig,
-    MemorySnapshot,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers — deterministic fake summarizer

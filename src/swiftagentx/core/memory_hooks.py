@@ -15,7 +15,6 @@ why this hook exists.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from .hooks import HookContext, HookEvent, HookResult, SemanticHook
 from .memory_layers import LayeredMemory

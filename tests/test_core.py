@@ -144,7 +144,7 @@ class TestPipeline:
         pipeline = RequestPipeline()
         pipeline.add_stage(TestStage("test"))
         ctx = {}
-        result = await pipeline.execute(ctx)
+        await pipeline.execute(ctx)
         assert ctx["processed"] is True
 
     @pytest.mark.asyncio

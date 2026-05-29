@@ -106,7 +106,7 @@ class OpenAICompatibleProvider(ModelClient):
                     lambda: req.post(url, headers=headers, json=payload, timeout=self.timeout_seconds)
                 )
                 if response_sync.status_code != 200:
-                    raise Exception(f"API error: {response_sync.status_code} - {response_sync.text}")
+                    raise Exception(f"API error: {response_sync.status_code} - {response_sync.text}") from None
                 data = response_sync.json()
 
             content = data["choices"][0]["message"]["content"]

@@ -45,8 +45,8 @@ def create_fastapi_admin_router(
     try:
         from fastapi import APIRouter
         from pydantic import BaseModel
-    except ImportError:
-        raise ImportError("FastAPI is required for the admin router: pip install fastapi")
+    except ImportError as exc:
+        raise ImportError("FastAPI is required for the admin router: pip install fastapi") from exc
 
     router = APIRouter(prefix=prefix, tags=tags or ["admin"])
 
