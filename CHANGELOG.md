@@ -8,6 +8,51 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ### Added
 
+- **Planner fast path (opt-in: `enable_planner`) — one light-model call
+  turns a REACT-level request into a deterministic tool plan, and plans
+  that keep succeeding graduate into Scenarios.** Where ReAct spends N+1
+  LLM calls deciding each step, the Planner emits the whole templated
+  chain up front (`core/planner.py`), validates it (known tools, closed
+  template vars, step cap), and executes it through the same engine that
+  runs Scenarios (`ScenarioEngine.execute_config`). Any failure falls back
+  to the ReAct loop. Successful plans enter a probation cache: new
+  phrasings match via slot-value-stripped anchors (one slot-extraction
+  call instead of a planning call), and promotion is dual-track —
+  rule-based auto-promotion after `plan_promote_after` clean successes
+  (`plan_auto_promote`), plus a manual track
+  (`Agent.list_plan_candidates` / `promote_plan` /
+  `export_plan_scenario`) for codifying a reviewed plan as a permanent
+  Scenario. A promoted plan registers its real user phrasings as
+  retrieval triggers and is routed by the classifier like any
+  human-authored scenario. Live lifecycle verification (qwen3.6-flash):
+  the same intent across three phrasings ran 2303ms/3-calls (fresh plan)
+  → 1592ms/3 (cache reuse + auto-promote) → 1260ms/2 (scenario route).
+  Caveat: a plan failing mid-chain after a side-effectful tool ran means
+  the ReAct fallback may re-run that tool — prefer read-mostly toolsets.
+- **Classifier prompt: scenario descriptions + explicit scenario-first
+  rule.** Candidates now render as `id(name: description) [slots: ...]`
+  and the prompt instructs "prefer level=2 over level=1 whenever a
+  scenario covers the request" — without these, multi-tool requests kept
+  classifying as REACT even when a registered scenario covered them
+  exactly (surfaced by the Planner promotion lifecycle test).
+- **`OpenAICompatibleProvider(extra_params=...)`** — vendor-specific
+  request fields (constructor default + per-call override) now reach the
+  wire. The motivating case: DashScope hybrid-thinking models need
+  `{"enable_thinking": False}` or every classification pays reasoning
+  latency — measured 2716ms → 465ms on qwen3.6-flash, and even qwen-flash
+  drops 1041ms → 444ms. README quickstart now recommends qwen3.6-flash
+  with thinking disabled.
+
+### Fixed
+
+- **Classifier slot extraction noise.** Slot values must now be the
+  shortest literal span copied verbatim from the input and are omitted
+  entirely when absent — previously the classifier emitted whole-phrase
+  values like `from_city='下周去上海'` or guessed `tracking_no='我的包裹'`.
+  Strict-equality slot verification against live qwen3.6-flash: 6/6
+  (qwen-flash scores 4/6 on the same prompt — the model upgrade is
+  load-bearing).
+
 - **Scenario retrieval pre-filter — the classifier prompt stays O(K) as the
   scenario pool grows.** Classification accuracy of a light model degrades
   as more candidates are listed in its prompt; retrieval doesn't. Above

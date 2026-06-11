@@ -45,6 +45,7 @@ from .memory_layers import (
 from .model_client import ModelClient
 from .parameter import ParameterManager
 from .pipeline import RequestPipeline
+from .planner import Planner, PlanStore
 from .prompt import PromptManager
 from .router import IntentLevel, IntentResult, IntentRouter
 from .skills import Skill, SkillRegistry
@@ -124,6 +125,8 @@ class Agent:
         self.router = IntentRouter(
             prefilter_top_k=self.config.scenario_prefilter_top_k,
         )
+        self.planner = Planner()
+        self.plan_store = PlanStore(promote_after=self.config.plan_promote_after)
         self.pipeline = RequestPipeline()
         self.termination_checker = TerminationChecker()
         self.hooks = HookRegistry()
@@ -717,7 +720,11 @@ class Agent:
             if exec_level == IntentLevel.SCENARIO and intent.scenario:
                 answer = await self._execute_scenario(intent.scenario, context)
             elif exec_level == IntentLevel.REACT:
-                answer = await self._react_loop(context)
+                answer = None
+                if self.config.enable_planner:
+                    answer = await self._try_planned_execution(context)
+                if answer is None:
+                    answer = await self._react_loop(context)
             else:
                 answer = await self._direct_response(context)
 
@@ -896,7 +903,13 @@ class Agent:
             if exec_level == IntentLevel.SCENARIO and intent.scenario:
                 answer = await self._execute_scenario(intent.scenario, context)
             elif exec_level == IntentLevel.REACT:
-                answer = await self._react_loop(context, adapter)
+                answer = None
+                if self.config.enable_planner:
+                    # Planned execution doesn't stream per-step events; the
+                    # final answer still goes out via _stream_answer below.
+                    answer = await self._try_planned_execution(context)
+                if answer is None:
+                    answer = await self._react_loop(context, adapter)
                 # _react_loop streams thoughts/actions/observations but
                 # currently does NOT stream the final answer token-by-token,
                 # so we still need _stream_answer to emit it.
@@ -1331,6 +1344,182 @@ class Agent:
             return answer
         else:
             return f"Sorry, I couldn't complete this request: {result.error}"
+
+    async def _try_planned_execution(self, context: SessionContext) -> str | None:
+        """Planner fast path for REACT-level requests. None = fall back to ReAct.
+
+        Order matters: a cached-plan hit costs one slot-extraction call; a
+        fresh plan costs one planning call — both beat the N+1 calls of a
+        full ReAct loop. Every failure path returns None instead of
+        raising, so this can only make requests faster, never break them.
+        """
+        user_input = context.user_input
+
+        # 1) Reuse a cached (probation) plan when one matches this phrasing.
+        cached = self.plan_store.match(user_input)
+        if cached is not None:
+            slots = await self._extract_plan_slots(cached.slot_names, user_input)
+            if slots is not None:
+                answer = await self._execute_plan_steps(
+                    cached.steps, slots, context, cached.intent,
+                )
+                if answer is not None:
+                    self._after_plan_success(cached.plan_id, user_input, slots)
+                    return answer
+                self.plan_store.record_failure(cached.plan_id)
+                return None
+            # Slots unextractable for this phrasing — try fresh planning.
+
+        # 2) Fresh plan: one light-model call.
+        try:
+            model = self.get_model(ModelTier.LIGHT)
+        except ValueError:
+            return None
+        schemas = self.tool_registry.schemas_for_query(user_input)
+        if not schemas:
+            return None
+        prompt = self.planner.build_prompt(user_input, schemas)
+        try:
+            response = await model.chat(
+                [{"role": "user", "content": prompt}],
+                temperature=0.1, max_tokens=500,
+            )
+        except Exception as e:
+            logger.error(f"Plan generation failed: {e}", exc_info=True)
+            return None
+
+        plan = self.planner.parse(response.content)
+        if plan is None:
+            return None
+        error = self.planner.validate(plan, set(self.tool_registry.list_tools()))
+        if error is not None:
+            logger.info(f"Plan rejected: {error}")
+            return None
+        if plan.required_vars() - set(plan.slots):
+            logger.info("Plan rejected: required slot values missing from request")
+            return None
+
+        answer = await self._execute_plan_steps(plan.steps, plan.slots, context, plan.intent)
+        if answer is None:
+            return None
+        # Only plans that actually executed successfully enter the cache.
+        cached = self.plan_store.add(plan, user_input)
+        self._after_plan_success(cached.plan_id)
+        return answer
+
+    async def _execute_plan_steps(
+        self,
+        steps: list[Any],
+        slots: dict[str, str],
+        context: SessionContext,
+        intent: str,
+    ) -> str | None:
+        """Run a plan's tool chain deterministically. None = step failed."""
+        config = ScenarioConfig(name=intent, tool_chain=list(steps))
+        extra_vars = {
+            **dict(context.variables),
+            **slots,
+            "user_id": context.user_id,
+            "user_input": context.user_input,
+            "session_id": context.session_id,
+        }
+        result = await self.scenario_engine.execute_config(
+            config, f"plan:{intent}", context, self.tool_executor,
+            extra_vars=extra_vars,
+        )
+        if not result.success:
+            logger.info(
+                f"Plan '{intent}' step failed ({result.error}) — falling back to ReAct"
+            )
+            return None
+        # Tools already ran (side effects included) — from here on, never
+        # return None or the ReAct fallback would run them a second time.
+        try:
+            model = self.get_model(ModelTier.HEAVY)
+            prompt = (
+                f"{self.prompt_manager.get_output_prompt()}\n\n"
+                f"Tool results: {result.result}\n\n"
+                f"User question: {context.user_input}\n\n"
+                "Generate a natural, helpful response."
+            )
+            response = await model.chat([{"role": "user", "content": prompt}])
+            return response.content
+        except Exception as e:
+            logger.error(f"Plan answer synthesis failed: {e}", exc_info=True)
+            return str(result.result)
+
+    async def _extract_plan_slots(
+        self, slot_names: list[str], user_input: str
+    ) -> dict[str, str] | None:
+        """Extract a cached plan's slot values from a new phrasing.
+
+        All-or-nothing: if any required slot is absent we return None and
+        the caller falls through to fresh planning (which may legitimately
+        produce a different plan for the variant phrasing).
+        """
+        if not slot_names:
+            return {}
+        try:
+            model = self.get_model(ModelTier.LIGHT)
+        except ValueError:
+            return None
+        prompt = (
+            "Extract these slot values from the user input. A value must be "
+            "the SHORTEST literal span copied verbatim from the input. If "
+            "any slot's value is absent, respond with exactly: slots={}\n"
+            f"Slots: {', '.join(slot_names)}\n"
+            f"User input: {user_input}\n"
+            'Respond with ONLY one line: slots={"name": "value"}'
+        )
+        try:
+            response = await model.chat(
+                [{"role": "user", "content": prompt}],
+                temperature=0.1, max_tokens=120,
+            )
+        except Exception as e:
+            logger.error(f"Plan slot extraction failed: {e}", exc_info=True)
+            return None
+        slots = IntentRouter._parse_slots(response.content)
+        extracted = {k: v for k, v in slots.items() if k in slot_names and v}
+        if set(slot_names) <= set(extracted):
+            return extracted
+        return None
+
+    def _after_plan_success(
+        self,
+        plan_id: str,
+        source_query: str = "",
+        slots: dict[str, str] | None = None,
+    ) -> None:
+        """Bookkeeping after a plan run succeeds; rule-track auto-promotion."""
+        promotable = self.plan_store.record_success(plan_id, source_query, slots)
+        if promotable and self.config.plan_auto_promote:
+            self.promote_plan(plan_id)
+
+    def promote_plan(self, plan_id: str) -> bool:
+        """Promote a cached plan into a registered Scenario (manual track,
+        also used by rule-track auto-promotion).
+
+        From this point the classifier routes matching requests through the
+        Scenario path — the plan's recorded user phrasings serve as the
+        retrieval prefilter's trigger anchors.
+        """
+        scenario = self.plan_store.to_scenario_config(plan_id)
+        if scenario is None:
+            return False
+        self.register_scenario(plan_id, scenario)
+        self.plan_store.mark_promoted(plan_id)
+        logger.info(f"Plan promoted to scenario: {plan_id}")
+        return True
+
+    def list_plan_candidates(self) -> list[dict[str, Any]]:
+        """Cached plans with their stats — for review before manual promotion."""
+        return [plan.model_dump() for plan in self.plan_store.list_plans()]
+
+    def export_plan_scenario(self, plan_id: str) -> ScenarioConfig | None:
+        """Render a cached plan as a ScenarioConfig draft the developer can
+        codify (the durable, human-confirmed promotion track)."""
+        return self.plan_store.to_scenario_config(plan_id)
 
     async def _direct_response(
         self, context: SessionContext, adapter: SSEStreamAdapter | None = None

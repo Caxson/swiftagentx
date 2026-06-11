@@ -176,7 +176,27 @@ class ScenarioEngine:
         scenario = self._scenarios.get(scenario_id)
         if not scenario:
             return ToolOutput(success=False, result=None, error=f"Scenario '{scenario_id}' not found")
+        return await self.execute_config(
+            scenario, scenario_id, context, tool_executor,
+            extra_vars=extra_vars, step_callback=step_callback,
+        )
 
+    async def execute_config(
+        self,
+        scenario: ScenarioConfig,
+        scenario_id: str,
+        context: AgentContext,
+        tool_executor: ToolExecutor,
+        extra_vars: dict[str, Any] | None = None,
+        step_callback: Callable[..., Any] | None = None,
+    ) -> ToolOutput:
+        """Execute a ScenarioConfig that need not be registered.
+
+        Same semantics as :meth:`execute`, but takes the config object
+        directly. This is what lets the Planner fast path run an ephemeral,
+        LLM-generated plan through the exact same toolchain machinery as a
+        registered Scenario — one execution engine, two front doors.
+        """
         if not scenario.tool_chain:
             return ToolOutput(
                 success=True,

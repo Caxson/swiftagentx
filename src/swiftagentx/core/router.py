@@ -69,6 +69,8 @@ class IntentRouter:
             "Respond with ONLY one line:\n"
             "  level=N scenario=<name> slots={{\"key\": \"value\"}}\n"
             "Rules:\n"
+            "- Prefer level=2 over level=1 whenever a scenario covers the "
+            "request, even if it involves multiple tools or steps.\n"
             "- Include scenario= and slots= ONLY when level=2.\n"
             "- A scenario's needed slots are shown after it as [slots: ...]. "
             "A slot value must be the SHORTEST literal span copied verbatim "
@@ -180,12 +182,21 @@ class IntentRouter:
 
     @staticmethod
     def _format_scenario_for_prompt(sid: str, info: Any) -> str:
-        """Render one scenario for the classifier prompt, with its slots."""
+        """Render one scenario for the classifier prompt: id, name, a short
+        description and its slots.
+
+        The description is load-bearing: with only ``id(name)[slots]`` the
+        classifier routinely judged multi-tool requests as level=1 even
+        when a scenario covered them exactly. Capped so a top-K candidate
+        list stays bounded.
+        """
         if isinstance(info, dict):
             name = info.get("name", sid)
+            desc = str(info.get("description") or "").strip()
+            desc_str = f": {desc[:60]}" if desc else ""
             slots = info.get("slots") or []
             slot_str = f" [slots: {', '.join(slots)}]" if slots else ""
-            return f"{sid}({name}){slot_str}"
+            return f"{sid}({name}{desc_str}){slot_str}"
         return f"{sid}({info})"
 
     def _parse_classification(self, raw_output: str) -> IntentResult:

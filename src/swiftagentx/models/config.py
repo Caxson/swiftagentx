@@ -54,6 +54,18 @@ class SwiftAgentConfig(BaseModel):
     # unfiltered.
     scenario_prefilter_top_k: int = 8
 
+    # Planner fast path (opt-in). Before entering the ReAct loop, spend ONE
+    # light-model call generating a deterministic tool plan; any failure
+    # falls back to ReAct. Caveat: if a plan fails mid-chain after a
+    # side-effectful tool already ran, the ReAct fallback may run that tool
+    # again — enable with care for non-idempotent toolsets.
+    enable_planner: bool = False
+    # Rule track: auto-register a plan as a Scenario after it succeeds
+    # `plan_promote_after` times with zero failures. Set False to keep
+    # promotion manual-only (Agent.promote_plan / export_plan_scenario).
+    plan_auto_promote: bool = True
+    plan_promote_after: int = 3
+
     # Layered memory (v0.3)
     memory_l2_size: int = 4
     memory_l3_max_size: int = 6
