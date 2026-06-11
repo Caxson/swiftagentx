@@ -6,6 +6,8 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-11
+
 ### Added
 
 - **`EmbeddingRetriever` — semantic scenario prefiltering.** Above

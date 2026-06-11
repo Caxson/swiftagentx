@@ -107,7 +107,8 @@ cheap, but each step can reach into the full agent toolkit when needed.
 | Pipeline stage short-circuit (KB / security / feature flags) | ✅ | DIY | ❌ | ❌ |
 | Streaming with fine-grained event types | ✅ 12 types | ✅ | partial | ✅ |
 | Framework-agnostic core (no HTTP in `core/`) | ✅ | n/a | n/a | n/a |
-| Test suite size | 218 tests, **< 0.5 s** | huge | huge | medium |
+| Plans mined from live traffic graduate into Scenarios | ✅ v0.4 | ❌ | ❌ | ❌ |
+| Test suite size | 274 tests, **< 0.7 s** | huge | huge | medium |
 
 LangChain is broader. SwiftAgentX is sharper for the predictable-traffic
 production patterns where latency and per-request LLM cost actually move
@@ -135,6 +136,8 @@ the unit of design, read on.
 |:--:|---|---|
 | 🎯 | **Scenarios** | Pre-compiled execution paths that skip the ReAct loop on known intents — the headline abstraction. Each chain step is a Python tool, an MCP tool, or a conditional hook. |
 | 🪜 | **Tiered execution** | Pipeline short-circuit → Scenario → ReAct → Direct, picked per request by a LIGHT classifier. |
+| 🧭 | **Planner fast path** (v0.4) | One LIGHT call plans a REACT request's whole tool chain up front; the chain runs deterministically, failures fall back to ReAct. Successful plans graduate into Scenarios through two human-gated steps (approve reuse → promote). |
+| 🔍 | **Scenario prefilter** (v0.4) | Classifier prompt stays O(K) as the scenario pool grows: retrieval picks top-K candidates per request. Zero-dep lexical default, pluggable `EmbeddingRetriever` for semantic matching. |
 | ⚖️ | **Dual-model routing** | `ModelTier.LIGHT` for classification, `ModelTier.HEAVY` for reasoning — ~30× cost spread on real providers. |
 | ⚡ | **Three-level cache** | KB exact match (global), tool result (per-user), session variables. Independent TTLs, periodic cleanup. |
 | 🚦 | **Pipeline stages** | KB short-circuit, security checks, feature flags, or any custom logic before cache/route. Stages CONTINUE, SHORT_CIRCUIT, or ABORT. |
@@ -325,6 +328,60 @@ agent.register_scenario("weather", ScenarioConfig(
 ```
 
 When the light model classifies a request as a "weather" scenario, the framework executes the tool chain directly — no ReAct loop, no extra LLM calls.
+
+### Planner Fast Path: Plans That Graduate into Scenarios (v0.4)
+
+For REACT-level requests, one LIGHT-model call can plan the whole tool
+chain up front; the chain then runs deterministically through the same
+engine that executes Scenarios. Any failure — unplannable request, invalid
+plan, step error — falls back to the normal ReAct loop, so the fast path
+can only make requests faster, never wronger.
+
+```python
+from swiftagentx import Agent, SwiftAgentConfig
+
+agent = Agent(model=..., config=SwiftAgentConfig(enable_planner=True))
+
+# A successful plan's afterlife has two gates — both MANUAL by default,
+# so the framework never persists LLM-generated behavior behind your back:
+for plan in agent.list_plan_candidates():    # review candidates + stats
+    agent.approve_plan(plan["plan_id"])      # gate 1: allow reuse on later requests
+    agent.promote_plan(plan["plan_id"])      # gate 2: register as a real Scenario
+
+# ...or let rules run both gates:
+# SwiftAgentConfig(enable_planner=True, plan_auto_reuse=True,
+#                  plan_auto_promote=True, plan_promote_after=3)
+```
+
+Measured on DashScope `qwen3.6-flash` (full-auto mode): the same intent
+across three phrasings ran **2.3 s / 3 LLM calls** (fresh plan) →
+**1.6 s / 3** (cached reuse) → **1.3 s / 2** (promoted, routed as a
+Scenario). The agent gets faster the more it runs — and Scenarios stay
+the destination: the Planner is their auto-miner, not their replacement.
+
+### Scenario Prefilter at Scale (v0.4)
+
+Above `scenario_prefilter_top_k` (default 8) registered scenarios, the
+router ranks the pool against the input and shows the classifier only the
+top-K candidates — classification accuracy and prompt size stay constant
+as the pool grows to hundreds of scenarios. The default retriever is
+lexical (zero dependencies, CJK-aware); plug in embeddings for semantic
+matching that catches phrasings with no shared keywords:
+
+```python
+from swiftagentx import Agent, EmbeddingRetriever
+from swiftagentx.providers.embedding import OpenAICompatibleEmbeddingProvider
+
+embedder = OpenAICompatibleEmbeddingProvider(
+    api_key=..., model="text-embedding-v4",
+    api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+agent = Agent(model=..., scenario_retriever=EmbeddingRetriever(embedder))
+```
+
+Scenario vectors are embedded once and cached — each request costs one
+query embedding, and any embedding failure falls back to lexical ranking
+instead of breaking classification.
 
 ### SSE Streaming
 
@@ -548,10 +605,14 @@ User Request
 [Cache Check] ─── hit? ──> Return cached answer (0ms)
     |
     v
+[Scenario Prefilter] ─── pool > top_k? retrieval keeps top-K candidates (lexical / embedding)
+    |
+    v
 [Intent Classification] (Light Model, ~200ms)
     |
     ├─ SCENARIO ──> Scenario Toolchain ──> Direct / LLM-formatted response
-    ├─ REACT ────> ReAct Loop (Heavy Model) ──> Thought → Action → Observation → ... → Answer
+    ├─ REACT ────> Planner fast path (opt-in): plan once ──> deterministic chain
+    │                 └─ invalid plan / step failure ──> ReAct Loop (Heavy Model)
     └─ DIRECT ───> Direct LLM Response (Heavy Model)
     |
     v
@@ -576,13 +637,13 @@ User Request
 
 ```
 swiftagentx/
-├── core/            # Agent, memory, model client, cache, prompt, parameter, router, pipeline
+├── core/            # Agent, memory, model client, cache, prompt, router, planner, retrieval, pipeline
 ├── models/          # Pydantic schemas (AgentRequest, AgentResponse, config)
 ├── tools/           # Tool base class, registry, executor, termination checker, scenario engine
 ├── knowledge_base/  # KnowledgeBase ABC, MemoryKB (TF-IDF), KnowledgeBaseTool, KnowledgeBaseStage
 ├── admin/           # AdminService, Flask Blueprint, FastAPI Router
 ├── stream/          # SSE adapter and event builder
-├── providers/       # LLM providers (OpenAI-compatible, DummyModelClient)
+├── providers/       # LLM providers (OpenAI-compatible chat + embeddings, DummyModelClient)
 ├── storage/         # Storage backend abstraction (memory, extensible)
 ├── middleware/       # Middleware chain (tracing, custom)
 └── web/             # Web framework adapters (Flask, FastAPI)
@@ -706,7 +767,8 @@ Scenario 不只是一个静态工具列表。链中的步骤可以是：
 | Pipeline 阶段短路（KB / 安全 / 功能开关） | ✅ | 自己写 | ❌ | ❌ |
 | 流式细粒度事件类型 | ✅ 12 种 | ✅ | 部分 | ✅ |
 | 框架无关核心（`core/` 不依赖 HTTP） | ✅ | n/a | n/a | n/a |
-| 测试套件 | 218 个测试，**< 0.5 秒** | 庞大 | 庞大 | 中等 |
+| 从线上流量自动挖掘计划并转正为 Scenario | ✅ v0.4 | ❌ | ❌ | ❌ |
+| 测试套件 | 274 个测试，**< 0.7 秒** | 庞大 | 庞大 | 中等 |
 
 LangChain 更广。SwiftAgentX 更专——专于流量可预测、延迟和单次
 LLM 成本是命门的生产场景。
@@ -728,6 +790,8 @@ LLM 成本是命门的生产场景。
 |:--:|---|---|
 | 🎯 | **Scenario** | 在已知意图上跳过 ReAct 循环的预编译执行路径——框架头号抽象。链中每一步可以是 Python tool、MCP tool 或条件 hook。 |
 | 🪜 | **分层执行** | Pipeline 短路 → Scenario → ReAct → Direct，由 LIGHT 分类器为每个请求挑路径。 |
+| 🧭 | **Planner 快速通道**（v0.4） | 一次 LIGHT 调用为 REACT 请求一次性规划完整工具链，确定性执行，失败回落 ReAct。成功的计划经两道人工门（放行复用 → 转正）升级为 Scenario。 |
+| 🔍 | **Scenario 检索预筛**（v0.4） | 场景池再大，分类 prompt 恒定 O(K)：每个请求先检索出 top-K 候选。默认零依赖词法检索，可插拔 `EmbeddingRetriever` 做语义匹配。 |
 | ⚖️ | **双模型路由** | `ModelTier.LIGHT` 做分类，`ModelTier.HEAVY` 做推理——真实 provider 上 ~30× 成本差。 |
 | ⚡ | **三级缓存** | KB 精准匹配（全局）、工具结果（按用户）、会话变量。各自独立 TTL，周期清理。 |
 | 🚦 | **Pipeline 阶段** | cache/route 之前插入 KB 短路、安全检查、功能开关等自定义逻辑。阶段可返回 CONTINUE / SHORT_CIRCUIT / ABORT。 |
@@ -909,6 +973,56 @@ agent.register_scenario("weather", ScenarioConfig(
 ```
 
 当轻量模型将请求分类为 "weather" 场景时，框架直接执行工具链——不进 ReAct 循环，不产生额外 LLM 调用。
+
+### Planner 快速通道：会转正为 Scenario 的计划（v0.4）
+
+对 REACT 级请求，一次 LIGHT 模型调用就能一次性规划出完整工具链，然后
+走和 Scenario 同一个引擎确定性执行。任何环节失败——请求不可规划、
+计划无效、某步出错——都回落到正常 ReAct 循环，快速通道只会让请求更快，
+不会更错。
+
+```python
+from swiftagentx import Agent, SwiftAgentConfig
+
+agent = Agent(model=..., config=SwiftAgentConfig(enable_planner=True))
+
+# 成功计划的后续使用有两道门——默认全部人工，
+# 框架绝不背着开发者持久化任何 LLM 生成的行为：
+for plan in agent.list_plan_candidates():    # 审查候选计划与战绩
+    agent.approve_plan(plan["plan_id"])      # 门1：放行，允许后续请求复用
+    agent.promote_plan(plan["plan_id"])      # 门2：注册为真正的 Scenario
+
+# ……也可以让规则接管两道门：
+# SwiftAgentConfig(enable_planner=True, plan_auto_reuse=True,
+#                  plan_auto_promote=True, plan_promote_after=3)
+```
+
+DashScope `qwen3.6-flash` 实测（全自动模式）：同一意图三种措辞，
+**2.3 秒 / 3 次 LLM 调用**（新计划）→ **1.6 秒 / 3 次**（缓存复用）→
+**1.3 秒 / 2 次**（转正后按 Scenario 路由）。Agent 跑得越多越快——
+而 Scenario 始终是终点：Planner 是它的自动矿机，不是替代品。
+
+### 大规模场景下的检索预筛（v0.4）
+
+注册场景数超过 `scenario_prefilter_top_k`（默认 8）后，路由器先把
+场景池和输入做检索排序，只让分类器看 top-K 候选——场景池涨到几百个，
+分类精度和 prompt 大小都恒定不变。默认检索器是词法的（零依赖、
+CJK 感知）；插上 embedding 就能做语义匹配，连一个关键词都不沾的
+措辞也能召回：
+
+```python
+from swiftagentx import Agent, EmbeddingRetriever
+from swiftagentx.providers.embedding import OpenAICompatibleEmbeddingProvider
+
+embedder = OpenAICompatibleEmbeddingProvider(
+    api_key=..., model="text-embedding-v4",
+    api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+agent = Agent(model=..., scenario_retriever=EmbeddingRetriever(embedder))
+```
+
+场景向量只嵌入一次并缓存——每个请求只多一次 query embedding，
+embedding 服务故障时自动回落词法排序，分类永不中断。
 
 ### SSE 流式响应
 
@@ -1128,10 +1242,14 @@ agent = Agent(
 [缓存检查] ─── 命中? ──> 返回缓存结果 (0ms)
     |
     v
+[场景检索预筛] ─── 场景池 > top_k? 检索保留 top-K 候选（词法 / 向量）
+    |
+    v
 [意图分类] (轻量模型, ~200ms)
     |
     ├─ SCENARIO ──> 场景工具链 ──> 直接返回 / LLM 格式化
-    ├─ REACT ────> ReAct 循环 (重量模型) ──> 思考 → 行动 → 观察 → ... → 回答
+    ├─ REACT ────> Planner 快速通道（可选）：一次规划 ──> 确定性执行工具链
+    │                 └─ 计划无效 / 某步失败 ──> ReAct 循环 (重量模型)
     └─ DIRECT ───> 直接 LLM 回复 (重量模型)
     |
     v
@@ -1156,13 +1274,13 @@ agent = Agent(
 
 ```
 swiftagentx/
-├── core/            # Agent 核心、记忆、模型客户端、缓存、提示词、参数、路由、流水线
+├── core/            # Agent 核心、记忆、模型客户端、缓存、提示词、路由、规划器、检索、流水线
 ├── models/          # Pydantic 数据模型（AgentRequest、AgentResponse、配置）
 ├── tools/           # 工具基类、注册表、执行器、终止检查器、场景引擎
 ├── knowledge_base/  # 知识库 ABC、MemoryKB（TF-IDF）、KnowledgeBaseTool、KnowledgeBaseStage
 ├── admin/           # AdminService、Flask Blueprint、FastAPI Router
 ├── stream/          # SSE 适配器和事件构建器
-├── providers/       # LLM 提供者（OpenAI 兼容、DummyModelClient）
+├── providers/       # LLM 提供者（OpenAI 兼容 chat + embeddings、DummyModelClient）
 ├── storage/         # 存储后端抽象（内存实现，可扩展）
 ├── middleware/       # 中间件链（追踪、自定义）
 └── web/             # Web 框架适配器（Flask、FastAPI）
