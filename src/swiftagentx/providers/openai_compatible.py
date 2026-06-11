@@ -30,6 +30,11 @@ class OpenAICompatibleProvider(ModelClient):
         temperature: Temperature parameter
         max_tokens: Maximum tokens
         timeout_seconds: Request timeout
+        extra_params: Vendor-specific request fields merged into every
+            payload (e.g. DashScope hybrid-thinking models need
+            ``{"enable_thinking": False}`` or every call pays multi-second
+            reasoning latency). Per-call ``extra_params=`` in chat()/
+            stream_chat() override these.
     """
 
     def __init__(
@@ -40,6 +45,7 @@ class OpenAICompatibleProvider(ModelClient):
         temperature: float = 0.7,
         max_tokens: int = 2000,
         timeout_seconds: int = 60,
+        extra_params: dict[str, Any] | None = None,
     ):
         # Fail fast at construction time with a clear actionable message
         # instead of crashing inside the first chat() call with the wrong
@@ -57,6 +63,7 @@ class OpenAICompatibleProvider(ModelClient):
             max_tokens=max_tokens, timeout_seconds=timeout_seconds,
         )
         self.api_base = api_base.rstrip("/")
+        self.extra_params = dict(extra_params) if extra_params else {}
 
     def _get_headers(self) -> dict[str, str]:
         return {
@@ -72,7 +79,7 @@ class OpenAICompatibleProvider(ModelClient):
         stream: bool = False,
         **kwargs: Any,
     ) -> dict:
-        return {
+        payload = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature if temperature is not None else self.temperature,
@@ -82,6 +89,14 @@ class OpenAICompatibleProvider(ModelClient):
             "frequency_penalty": kwargs.get("frequency_penalty", 0),
             "presence_penalty": kwargs.get("presence_penalty", 0),
         }
+        # Vendor knobs: constructor defaults first, per-call overrides last.
+        # `messages`/`stream` stay protocol-owned — overriding them via the
+        # escape hatch would corrupt the request or break stream parsing.
+        for source in (self.extra_params, kwargs.get("extra_params") or {}):
+            for key, value in source.items():
+                if key not in ("messages", "stream"):
+                    payload[key] = value
+        return payload
 
     async def complete(self, prompt: str, **kwargs: Any) -> ModelResponse:
         messages = [{"role": "user", "content": prompt}]

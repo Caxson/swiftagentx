@@ -217,11 +217,14 @@ async def main():
         #     api_key=os.environ["OPENAI_API_KEY"], model="gpt-4o",
         #     api_base="https://api.openai.com/v1",
         # ),
-        # Aliyun DashScope (Qwen — what the benchmarks above use):
+        # Aliyun DashScope (Qwen — what the benchmarks above use).
+        # Disabling hybrid thinking matters: it halves classification
+        # latency (~1000ms -> ~450ms measured) with identical output.
         model=OpenAICompatibleProvider(
             api_key=os.environ["DASHSCOPE_API_KEY"],
-            model="qwen-flash",
+            model="qwen3.6-flash",
             api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            extra_params={"enable_thinking": False},
         ),
         # DeepSeek:
         # model=OpenAICompatibleProvider(
@@ -804,11 +807,13 @@ async def main():
         #     api_key=os.environ["OPENAI_API_KEY"], model="gpt-4o",
         #     api_base="https://api.openai.com/v1",
         # ),
-        # 阿里云 DashScope (Qwen，benchmark 用的就是这套):
+        # 阿里云 DashScope (Qwen，benchmark 用的就是这套)。
+        # 务必关闭混合思考：实测分类延迟从 ~1000ms 降到 ~450ms，输出完全一致。
         model=OpenAICompatibleProvider(
             api_key=os.environ["DASHSCOPE_API_KEY"],
-            model="qwen-flash",
+            model="qwen3.6-flash",
             api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            extra_params={"enable_thinking": False},
         ),
         # DeepSeek:
         # model=OpenAICompatibleProvider(

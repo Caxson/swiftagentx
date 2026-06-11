@@ -71,10 +71,14 @@ class IntentRouter:
             "Rules:\n"
             "- Include scenario= and slots= ONLY when level=2.\n"
             "- A scenario's needed slots are shown after it as [slots: ...]. "
-            "Extract those values from the user input into the slots JSON "
-            "object. Omit any slot whose value isn't present.\n"
+            "A slot value must be the SHORTEST literal span copied verbatim "
+            "from the user input (a city name, an order id) — never a whole "
+            "phrase. If the input doesn't explicitly state a slot's value, "
+            "OMIT that slot entirely; never guess or fill placeholder text.\n"
             "- If level is 1 or 3, output just 'level=N'.\n"
-            "Example: level=2 scenario=weather_query slots={{\"city\": \"北京\"}}"
+            "Example: level=2 scenario=weather_query slots={{\"city\": \"北京\"}}\n"
+            "Example (value absent): 今天天气怎么样 -> "
+            "level=2 scenario=weather_query slots={{}}"
         )
 
     def set_classification_prompt(self, template: str) -> None:
