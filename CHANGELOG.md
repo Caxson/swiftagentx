@@ -26,12 +26,17 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ### Changed
 
-- **`plan_auto_promote` now defaults to `False` (manual-first).** By
-  default, successful plans accumulate in the probation cache and wait
-  for developer review (`list_plan_candidates` / `promote_plan` /
-  `export_plan_scenario`); nothing gets registered as a Scenario behind
-  your back. Opt into rule-track auto-promotion with
-  `plan_auto_promote=True`.
+- **A successful plan's afterlife now has two independently configurable
+  gates, both defaulting to manual.** Gate 1 — reuse
+  (`plan_auto_reuse`, default `False`): generated plans are one-shot
+  accelerators; same-shape regenerations dedupe into a single candidate
+  that keeps score, but nothing is matched against future requests until
+  `Agent.approve_plan()` opens the gate (or `plan_auto_reuse=True` makes
+  it a rule). Gate 2 — promotion to Scenario (`plan_auto_promote`,
+  default `False`): manual via `promote_plan` / `export_plan_scenario`,
+  or rule-based after `plan_promote_after` clean successes. Promotion
+  implies reuse approval. Defaults mean the framework never persists
+  LLM-generated behavior behind the developer's back.
 
 - **Planner fast path (opt-in: `enable_planner`) — one light-model call
   turns a REACT-level request into a deterministic tool plan, and plans

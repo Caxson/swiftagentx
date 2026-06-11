@@ -129,7 +129,10 @@ class Agent:
             prefilter_top_k=self.config.scenario_prefilter_top_k,
         )
         self.planner = Planner()
-        self.plan_store = PlanStore(promote_after=self.config.plan_promote_after)
+        self.plan_store = PlanStore(
+            promote_after=self.config.plan_promote_after,
+            auto_reuse=self.config.plan_auto_reuse,
+        )
         self.pipeline = RequestPipeline()
         self.termination_checker = TerminationChecker()
         self.hooks = HookRegistry()
@@ -1498,6 +1501,12 @@ class Agent:
         promotable = self.plan_store.record_success(plan_id, source_query, slots)
         if promotable and self.config.plan_auto_promote:
             self.promote_plan(plan_id)
+
+    def approve_plan(self, plan_id: str) -> bool:
+        """Open the reuse gate for a candidate plan (manual track of
+        ``plan_auto_reuse``): from now on new requests may match and reuse
+        it. Promotion to a Scenario stays a separate, later decision."""
+        return self.plan_store.approve(plan_id)
 
     def promote_plan(self, plan_id: str) -> bool:
         """Promote a cached plan into a registered Scenario (manual track,

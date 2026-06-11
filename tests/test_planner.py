@@ -153,6 +153,22 @@ class TestPlanStore:
         store.mark_promoted(cached.plan_id)
         assert store.match("帮我查上海天气然后算2+2") is None
 
+    def test_manual_reuse_gate(self):
+        store = PlanStore(auto_reuse=False)
+        cached = store.add(_gen_plan(), "帮我查北京天气然后算1+1")
+        # Gate closed: candidate accumulates but is never matched...
+        assert cached.approved is False
+        assert store.match("帮我查上海天气然后算2+2") is None
+        # ...until a developer approves it.
+        assert store.approve(cached.plan_id) is True
+        assert store.match("帮我查上海天气然后算2+2") is not None
+
+    def test_promotion_implies_reuse_approval(self):
+        store = PlanStore(auto_reuse=False)
+        cached = store.add(_gen_plan(), "查北京天气算1+1")
+        store.mark_promoted(cached.plan_id)
+        assert store.get(cached.plan_id).approved is True
+
     def test_to_scenario_config(self):
         store = PlanStore()
         cached = store.add(_gen_plan(), "查北京天气算1+1")
@@ -259,7 +275,7 @@ class TestAgentPlannerIntegration:
     @pytest.mark.asyncio
     async def test_cached_plan_reused_with_new_slots(self):
         model = _ScriptedModel()
-        agent, calls = _make_agent(model)
+        agent, calls = _make_agent(model, plan_auto_reuse=True)
         await agent.run("帮我查北京天气然后算1+1")
         response = await agent.run("帮我查上海天气然后算2*3")
 
@@ -303,9 +319,33 @@ class TestAgentPlannerIntegration:
         assert calls == []
 
     @pytest.mark.asyncio
+    async def test_default_reuse_is_one_shot_until_approved(self):
+        # plan_auto_reuse defaults to False: every request re-plans, but
+        # same-shape plans dedupe into one candidate that keeps score.
+        model = _ScriptedModel()
+        agent, _ = _make_agent(model)
+        await agent.run("帮我查北京天气然后算1+1")
+        await agent.run("帮我查上海天气然后算2*3")
+
+        assert model.planner_calls == 2   # no reuse: planned twice
+        assert model.extract_calls == 0
+        candidates = agent.plan_store.list_plans()
+        assert len(candidates) == 1       # deduped by shape
+        assert candidates[0].successes == 2
+        assert candidates[0].approved is False
+
+        # Developer opens the reuse gate; the next request reuses.
+        assert agent.approve_plan(candidates[0].plan_id) is True
+        await agent.run("帮我查广州天气然后算3*3")
+        assert model.planner_calls == 2   # unchanged: matched, not re-planned
+        assert model.extract_calls == 1
+
+    @pytest.mark.asyncio
     async def test_rule_track_auto_promotes_to_scenario(self):
         model = _ScriptedModel()
-        agent, _ = _make_agent(model, plan_promote_after=2, plan_auto_promote=True)
+        agent, _ = _make_agent(
+            model, plan_auto_reuse=True, plan_promote_after=2, plan_auto_promote=True,
+        )
         await agent.run("帮我查北京天气然后算1+1")
         await agent.run("帮我查上海天气然后算2*3")
 

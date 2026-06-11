@@ -183,17 +183,27 @@ class CachedPlan(BaseModel):
     match_anchors: list[str] = Field(default_factory=list)
     successes: int = 0
     failures: int = 0
+    # Reuse gate: only approved plans are matched against new requests.
+    # auto_reuse stores approve on add; otherwise a developer approves.
+    approved: bool = False
     promoted: bool = False
 
 
 class PlanStore:
-    """Probation cache for generated plans + dual-track promotion.
+    """Candidate cache for generated plans, with two promotion gates.
 
-    Rule track: after ``promote_after`` successes with zero failures the
-    plan is reported promotable (the agent auto-registers it as a Scenario
-    when ``plan_auto_promote`` is on). Manual track: plans stay in
-    probation until the developer calls ``Agent.promote_plan()`` /
-    exports the ScenarioConfig. Both tracks coexist.
+    A successful plan's lifecycle has two independently gated steps, each
+    with a rule track and a manual track:
+
+    1. REUSE — may this plan be matched against future requests at all?
+       ``auto_reuse=True``: approved on entry (rule track).
+       ``auto_reuse=False`` (manual): the plan only accumulates stats as a
+       candidate (same-shape regenerations dedupe into it) until the
+       developer approves it. Unapproved plans are one-shot accelerators.
+    2. PROMOTION to Scenario — after ``promote_after`` clean successes the
+       plan is reported promotable (the agent auto-registers it when
+       ``plan_auto_promote`` is on); otherwise ``Agent.promote_plan()`` /
+       ``export_plan_scenario()`` keep it a developer decision.
 
     Matching uses anchor containment over the same CJK-aware tokens the
     scenario prefilter uses: anchors are stored with their slot values
@@ -211,12 +221,14 @@ class PlanStore:
         match_threshold: float = 0.6,
         promote_after: int = 3,
         evict_after_failures: int = 2,
+        auto_reuse: bool = True,
     ):
         self._plans: dict[str, CachedPlan] = {}
         self.max_size = max(1, max_size)
         self.match_threshold = match_threshold
         self.promote_after = max(1, promote_after)
         self.evict_after_failures = max(1, evict_after_failures)
+        self.auto_reuse = auto_reuse
 
     def add(self, plan: GeneratedPlan, source_query: str) -> CachedPlan:
         """Cache a freshly generated plan (deduped by tool-chain shape)."""
@@ -232,6 +244,7 @@ class PlanStore:
             description=plan.description,
             steps=list(plan.steps),
             slot_names=sorted(plan.required_vars()),
+            approved=self.auto_reuse,
         )
         self._add_anchor(cached, source_query, plan.slots)
         self._evict_if_full()
@@ -240,13 +253,15 @@ class PlanStore:
         return cached
 
     def match(self, query: str) -> CachedPlan | None:
-        """Best unpromoted plan whose anchor the query sufficiently covers."""
+        """Best approved, unpromoted plan whose anchor the query covers."""
         query_tokens = set(tokenize(query))
         if not query_tokens:
             return None
         best: CachedPlan | None = None
         best_score = 0.0
         for plan in self._plans.values():
+            if not plan.approved:
+                continue  # reuse gate closed: candidate awaiting review
             if plan.promoted:
                 continue  # promoted plans are served by the Scenario path
             for anchor in plan.match_anchors:
@@ -290,9 +305,18 @@ class PlanStore:
             del self._plans[plan_id]
             logger.info(f"Plan evicted after {plan.failures} failures: {plan_id}")
 
+    def approve(self, plan_id: str) -> bool:
+        """Open the reuse gate for a candidate plan (manual track)."""
+        plan = self._plans.get(plan_id)
+        if plan is None:
+            return False
+        plan.approved = True
+        return True
+
     def mark_promoted(self, plan_id: str) -> None:
         plan = self._plans.get(plan_id)
         if plan is not None:
+            plan.approved = True  # promotion implies the reuse gate
             plan.promoted = True
 
     def get(self, plan_id: str) -> CachedPlan | None:

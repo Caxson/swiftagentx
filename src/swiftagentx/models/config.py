@@ -60,11 +60,19 @@ class SwiftAgentConfig(BaseModel):
     # side-effectful tool already ran, the ReAct fallback may run that tool
     # again — enable with care for non-idempotent toolsets.
     enable_planner: bool = False
-    # Promotion is dual-track. Manual (default): plans stay in the
-    # probation cache until the developer reviews and registers them via
-    # Agent.list_plan_candidates / promote_plan / export_plan_scenario.
-    # Rule track: set plan_auto_promote=True to auto-register a plan as a
-    # Scenario after `plan_promote_after` successes with zero failures.
+    # A successful plan's afterlife has two gates, each defaulting to
+    # manual (nothing persists behind the developer's back):
+    #
+    # Gate 1 — REUSE. plan_auto_reuse=False (default): generated plans are
+    # one-shot; they accumulate as reviewable candidates (same-shape
+    # regenerations dedupe and keep score) until Agent.approve_plan()
+    # opens the gate. True: a plan that executed successfully is matched
+    # and reused for later requests immediately.
+    plan_auto_reuse: bool = False
+    # Gate 2 — PROMOTION to Scenario. plan_auto_promote=True auto-registers
+    # a plan as a Scenario after `plan_promote_after` successes with zero
+    # failures; default False keeps it manual
+    # (Agent.promote_plan / export_plan_scenario).
     plan_auto_promote: bool = False
     plan_promote_after: int = 3
 
