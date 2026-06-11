@@ -87,6 +87,10 @@ class IntentRouter:
         """Override the default classification prompt template."""
         self._classification_prompt_template = template
 
+    def set_retriever(self, retriever: ScenarioRetriever) -> None:
+        """Swap the prefilter retriever (e.g. for an EmbeddingRetriever)."""
+        self._retriever = retriever
+
     def register_scenarios(self, scenarios: dict[str, Any]) -> None:
         """Register scenario names for classification."""
         self._scenarios.update(scenarios)
@@ -105,7 +109,7 @@ class IntentRouter:
         if model is None:
             return IntentResult(level=IntentLevel.DIRECT, confidence=0.5, raw_output="no model provided")
 
-        candidates = self._prefilter_scenarios(user_input)
+        candidates = await self._prefilter_scenarios(user_input)
         scenario_list = ", ".join(
             self._format_scenario_for_prompt(sid, info)
             for sid, info in candidates.items()
@@ -133,7 +137,7 @@ class IntentRouter:
             logger.error(f"Intent classification failed: {e}", exc_info=True)
             return IntentResult(level=IntentLevel.DIRECT, confidence=0.3, raw_output=str(e))
 
-    def _prefilter_scenarios(self, user_input: str) -> dict[str, Any]:
+    async def _prefilter_scenarios(self, user_input: str) -> dict[str, Any]:
         """Keep the classification prompt O(K) regardless of pool size.
 
         With ≤K scenarios this is a no-op — small deployments see the exact
@@ -151,7 +155,7 @@ class IntentRouter:
             for sid, info in self._scenarios.items()
         }
         try:
-            ranked = self._retriever.rank(user_input, docs)
+            ranked = await self._retriever.rank(user_input, docs)
         except Exception:
             logger.error(
                 "Scenario prefilter failed; falling back to full pool",

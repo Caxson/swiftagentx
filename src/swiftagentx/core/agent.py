@@ -47,6 +47,7 @@ from .parameter import ParameterManager
 from .pipeline import RequestPipeline
 from .planner import Planner, PlanStore
 from .prompt import PromptManager
+from .retrieval import ScenarioRetriever
 from .router import IntentLevel, IntentResult, IntentRouter
 from .skills import Skill, SkillRegistry
 from .subagent import (
@@ -85,6 +86,7 @@ class Agent:
         model: ModelClient | None = None,
         max_iterations: int = 10,
         config: SwiftAgentConfig | None = None,
+        scenario_retriever: ScenarioRetriever | None = None,
     ):
         self.name = name
         self.config = config or SwiftAgentConfig(name=name, max_iterations=max_iterations)
@@ -123,6 +125,7 @@ class Agent:
         self.tool_executor = ToolExecutor(self.tool_registry)
         self.scenario_engine = ScenarioEngine()
         self.router = IntentRouter(
+            retriever=scenario_retriever,
             prefilter_top_k=self.config.scenario_prefilter_top_k,
         )
         self.planner = Planner()

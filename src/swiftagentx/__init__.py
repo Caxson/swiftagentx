@@ -38,7 +38,12 @@ from .core.model_client import DummyModelClient, ModelClient, ModelClientFactory
 from .core.pipeline import PipelineStage, RequestPipeline, StageAction, StageResult
 from .core.prompt import PromptManager, PromptTemplate
 from .core.prompt_layout import PromptLayout
-from .core.retrieval import LexicalRetriever, ScenarioRetriever
+from .core.retrieval import (
+    Embedder,
+    EmbeddingRetriever,
+    LexicalRetriever,
+    ScenarioRetriever,
+)
 from .core.router import IntentLevel, IntentResult, IntentRouter
 from .core.skills import Skill, SkillRegistry, parse_skill_markdown
 from .core.subagent import (
@@ -104,7 +109,7 @@ __all__ = [
     "CacheManager",
     "PromptManager", "PromptTemplate",
     "IntentLevel", "IntentResult", "IntentRouter",
-    "LexicalRetriever", "ScenarioRetriever",
+    "Embedder", "EmbeddingRetriever", "LexicalRetriever", "ScenarioRetriever",
     "PipelineStage", "StageResult", "StageAction", "RequestPipeline",
     # Tools
     "Tool", "ToolOutput", "ToolOutputType", "AgentContext",

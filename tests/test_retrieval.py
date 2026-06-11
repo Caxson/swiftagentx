@@ -51,30 +51,91 @@ DOCS = {
 
 
 class TestLexicalRetriever:
-    def test_relevant_doc_ranked_first_cjk(self):
-        ranked = LexicalRetriever().rank("北京今天天气怎么样", DOCS)
+    @pytest.mark.asyncio
+    async def test_relevant_doc_ranked_first_cjk(self):
+        ranked = await LexicalRetriever().rank("北京今天天气怎么样", DOCS)
         assert ranked[0] == "weather"
 
-    def test_relevant_doc_ranked_first_latin(self):
-        ranked = LexicalRetriever().rank("please send an email to alice", DOCS)
+    @pytest.mark.asyncio
+    async def test_relevant_doc_ranked_first_latin(self):
+        ranked = await LexicalRetriever().rank("please send an email to alice", DOCS)
         assert ranked[0] == "email"
 
-    def test_returns_permutation_of_all_ids(self):
-        ranked = LexicalRetriever().rank("天气", DOCS)
+    @pytest.mark.asyncio
+    async def test_returns_permutation_of_all_ids(self):
+        ranked = await LexicalRetriever().rank("天气", DOCS)
         assert sorted(ranked) == sorted(DOCS.keys())
 
-    def test_zero_overlap_keeps_insertion_order(self):
-        ranked = LexicalRetriever().rank("完全无关的输入xyz", DOCS)
+    @pytest.mark.asyncio
+    async def test_zero_overlap_keeps_insertion_order(self):
+        ranked = await LexicalRetriever().rank("完全无关的输入xyz", DOCS)
         assert ranked == list(DOCS.keys())
 
-    def test_empty_docs(self):
-        assert LexicalRetriever().rank("天气", {}) == []
+    @pytest.mark.asyncio
+    async def test_empty_docs(self):
+        assert await LexicalRetriever().rank("天气", {}) == []
 
-    def test_common_token_does_not_dominate(self):
+    @pytest.mark.asyncio
+    async def test_common_token_does_not_dominate(self):
         # "查询" appears in several docs (low IDF); the discriminative
         # token "客户" must decide the winner.
-        ranked = LexicalRetriever().rank("查询客户信息", DOCS)
+        ranked = await LexicalRetriever().rank("查询客户信息", DOCS)
         assert ranked[0] == "crm"
+
+
+# ---------------------------------------------------------------------------
+# EmbeddingRetriever
+# ---------------------------------------------------------------------------
+
+class _FakeEmbedder:
+    """Maps known texts to fixed vectors; counts embed() calls."""
+
+    def __init__(self, table: dict[str, list[float]]):
+        self.table = table
+        self.calls = 0
+
+    async def embed(self, texts):
+        self.calls += 1
+        return [self.table[t] for t in texts]
+
+
+class _ExplodingEmbedder:
+    async def embed(self, texts):
+        raise RuntimeError("embedding service down")
+
+
+class TestEmbeddingRetriever:
+    @pytest.mark.asyncio
+    async def test_ranks_by_cosine_similarity(self):
+        from swiftagentx.core.retrieval import EmbeddingRetriever
+
+        docs = {"weather": "天气查询", "email": "发送邮件"}
+        embedder = _FakeEmbedder({
+            "天气查询": [1.0, 0.0],
+            "发送邮件": [0.0, 1.0],
+            "出门要带伞吗": [0.9, 0.1],   # semantically weather, zero lexical overlap
+        })
+        ranked = await EmbeddingRetriever(embedder).rank("出门要带伞吗", docs)
+        assert ranked[0] == "weather"
+
+    @pytest.mark.asyncio
+    async def test_doc_vectors_cached_across_calls(self):
+        from swiftagentx.core.retrieval import EmbeddingRetriever
+
+        docs = {"weather": "天气查询"}
+        embedder = _FakeEmbedder({"天气查询": [1.0, 0.0], "q1": [1.0, 0.0], "q2": [0.5, 0.5]})
+        retriever = EmbeddingRetriever(embedder)
+        await retriever.rank("q1", docs)
+        await retriever.rank("q2", docs)
+        # call 1: docs, call 2: q1, call 3: q2 — docs NOT re-embedded.
+        assert embedder.calls == 3
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_lexical_on_embedding_failure(self):
+        from swiftagentx.core.retrieval import EmbeddingRetriever
+
+        ranked = await EmbeddingRetriever(_ExplodingEmbedder()).rank("北京天气", DOCS)
+        assert ranked[0] == "weather"  # lexical fallback still ranks correctly
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +209,7 @@ class TestRouterPrefilter:
     @pytest.mark.asyncio
     async def test_broken_retriever_falls_back_to_full_pool(self):
         class BrokenRetriever:
-            def rank(self, query, docs):
+            async def rank(self, query, docs):
                 raise RuntimeError("boom")
 
         router = IntentRouter(
@@ -165,7 +226,7 @@ class TestRouterPrefilter:
     @pytest.mark.asyncio
     async def test_retriever_returning_unknown_ids_is_tolerated(self):
         class NoisyRetriever:
-            def rank(self, query, docs):
+            async def rank(self, query, docs):
                 return ["ghost_id", *docs.keys()]
 
         router = IntentRouter(

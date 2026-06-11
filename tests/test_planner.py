@@ -317,6 +317,19 @@ class TestAgentPlannerIntegration:
         assert agent.router._scenarios[plan.plan_id]["triggers"]
 
     @pytest.mark.asyncio
+    async def test_default_promotion_is_manual(self):
+        # plan_auto_promote defaults to False: plans accumulate successes
+        # but are never registered behind the developer's back.
+        model = _ScriptedModel()
+        agent, _ = _make_agent(model, plan_promote_after=1)
+        await agent.run("帮我查北京天气然后算1+1")
+
+        plan = agent.plan_store.list_plans()[0]
+        assert plan.successes >= 1
+        assert plan.promoted is False
+        assert agent.scenario_engine.get(plan.plan_id) is None
+
+    @pytest.mark.asyncio
     async def test_manual_track_when_auto_promote_off(self):
         model = _ScriptedModel()
         agent, _ = _make_agent(model, plan_promote_after=1, plan_auto_promote=False)

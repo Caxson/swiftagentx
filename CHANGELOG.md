@@ -8,6 +8,31 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ### Added
 
+- **`EmbeddingRetriever` — semantic scenario prefiltering.** Above
+  `scenario_prefilter_top_k` scenarios the router already prefilters via
+  retrieval; it can now rank semantically instead of lexically: pass
+  `Agent(scenario_retriever=EmbeddingRetriever(embedder))` with any
+  `Embedder` (built-in: `providers.embedding.
+  OpenAICompatibleEmbeddingProvider`, works with DashScope
+  `text-embedding-v4`). Scenario doc vectors are embedded once and
+  cached — each request costs one query embedding; any embedding failure
+  degrades to the lexical fallback instead of breaking classification.
+  `ScenarioRetriever.rank` is now async to allow the network hop. Live
+  verification on a 30-scenario pool: two zero-lexical-overlap semantic
+  queries ("明天出门要带伞吗" → weather, "欧元现在什么价" → exchange
+  rate) that the lexical prefilter misses both rank top-K and classify
+  correctly via embeddings; doc-vector caching confirmed (1 doc batch +
+  1 query call per request, first request 2548ms, subsequent ~800ms).
+
+### Changed
+
+- **`plan_auto_promote` now defaults to `False` (manual-first).** By
+  default, successful plans accumulate in the probation cache and wait
+  for developer review (`list_plan_candidates` / `promote_plan` /
+  `export_plan_scenario`); nothing gets registered as a Scenario behind
+  your back. Opt into rule-track auto-promotion with
+  `plan_auto_promote=True`.
+
 - **Planner fast path (opt-in: `enable_planner`) — one light-model call
   turns a REACT-level request into a deterministic tool plan, and plans
   that keep succeeding graduate into Scenarios.** Where ReAct spends N+1
