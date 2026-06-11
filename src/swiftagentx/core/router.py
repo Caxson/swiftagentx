@@ -14,8 +14,14 @@ from typing import Any
 from pydantic import BaseModel
 
 from .model_client import ModelClient, ModelResponse
+from .retrieval import LexicalRetriever, ScenarioRetriever
 
 logger = logging.getLogger(__name__)
+
+# Above this many scenarios, the classifier prompt stops listing the full
+# pool and shows only the retrieval top-K — accuracy of a light classifier
+# degrades as the candidate list grows, retrieval doesn't.
+DEFAULT_PREFILTER_TOP_K = 8
 
 
 class IntentLevel(Enum):
@@ -45,8 +51,15 @@ class IntentRouter:
     then route to the appropriate execution path.
     """
 
-    def __init__(self, scenarios: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        scenarios: dict[str, Any] | None = None,
+        retriever: ScenarioRetriever | None = None,
+        prefilter_top_k: int = DEFAULT_PREFILTER_TOP_K,
+    ):
         self._scenarios = scenarios or {}
+        self._retriever: ScenarioRetriever = retriever if retriever is not None else LexicalRetriever()
+        self._prefilter_top_k = max(1, prefilter_top_k)
         self._classification_prompt_template = (
             "Classify the user's intent into one of three levels:\n"
             "- level=1: Needs multi-step tool calls (e.g., complex queries, calculations)\n"
@@ -86,9 +99,10 @@ class IntentRouter:
         if model is None:
             return IntentResult(level=IntentLevel.DIRECT, confidence=0.5, raw_output="no model provided")
 
+        candidates = self._prefilter_scenarios(user_input)
         scenario_list = ", ".join(
             self._format_scenario_for_prompt(sid, info)
-            for sid, info in self._scenarios.items()
+            for sid, info in candidates.items()
         )
 
         prompt = self._classification_prompt_template.format(
@@ -102,10 +116,63 @@ class IntentRouter:
                 temperature=0.1,
                 max_tokens=100,
             )
-            return self._parse_classification(response.content)
+            result = self._parse_classification(response.content)
+            if len(candidates) < len(self._scenarios):
+                result.metadata["prefilter"] = {
+                    "pool": len(self._scenarios),
+                    "shown": list(candidates),
+                }
+            return result
         except Exception as e:
             logger.error(f"Intent classification failed: {e}", exc_info=True)
             return IntentResult(level=IntentLevel.DIRECT, confidence=0.3, raw_output=str(e))
+
+    def _prefilter_scenarios(self, user_input: str) -> dict[str, Any]:
+        """Keep the classification prompt O(K) regardless of pool size.
+
+        With ≤K scenarios this is a no-op — small deployments see the exact
+        same prompt as before. A scenario wrongly filtered out can't be
+        picked by the classifier, so the request degrades to ReAct (slower
+        but still correct), never to a scenario misfire. A failing custom
+        retriever falls back to the full pool, again preserving the old
+        behavior instead of crashing classification.
+        """
+        if len(self._scenarios) <= self._prefilter_top_k:
+            return self._scenarios
+
+        docs = {
+            sid: self._scenario_document(sid, info)
+            for sid, info in self._scenarios.items()
+        }
+        try:
+            ranked = self._retriever.rank(user_input, docs)
+        except Exception:
+            logger.error(
+                "Scenario prefilter failed; falling back to full pool",
+                exc_info=True,
+            )
+            return self._scenarios
+
+        keep = [sid for sid in ranked if sid in self._scenarios][: self._prefilter_top_k]
+        logger.debug(
+            f"Scenario prefilter: {len(self._scenarios)} -> {len(keep)} candidates: {keep}"
+        )
+        return {sid: self._scenarios[sid] for sid in keep}
+
+    @staticmethod
+    def _scenario_document(sid: str, info: Any) -> str:
+        """Build the retrieval anchor text for one scenario.
+
+        Triggers are the strongest anchors — they are real phrasings the
+        scenario author expects users to type — followed by name,
+        description and slot names.
+        """
+        if not isinstance(info, dict):
+            return f"{sid} {info}"
+        parts: list[str] = [sid, str(info.get("name", "")), str(info.get("description", ""))]
+        parts.extend(str(t) for t in info.get("triggers") or [])
+        parts.extend(str(s) for s in info.get("slots") or [])
+        return " ".join(p for p in parts if p)
 
     @staticmethod
     def _format_scenario_for_prompt(sid: str, info: Any) -> str:

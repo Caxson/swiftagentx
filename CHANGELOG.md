@@ -6,6 +6,24 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+### Added
+
+- **Scenario retrieval pre-filter — the classifier prompt stays O(K) as the
+  scenario pool grows.** Classification accuracy of a light model degrades
+  as more candidates are listed in its prompt; retrieval doesn't. Above
+  `scenario_prefilter_top_k` (default 8) registered scenarios, the router
+  now ranks the pool against the user input with a zero-dependency,
+  CJK-aware lexical retriever (`core/retrieval.py`: Latin word tokens + CJK
+  character bigrams, IDF-weighted overlap) and only shows the top-K
+  candidates to the classifier. Scenario `triggers` double as retrieval
+  anchors. Pools at or below K see the exact same prompt as before; a
+  wrongly filtered scenario degrades to ReAct (slower but correct), never
+  to a misfire; a failing custom retriever falls back to the full pool.
+  Swap in an embedding-based retriever via the `ScenarioRetriever` protocol
+  (`IntentRouter(retriever=...)`). Verified against live DashScope
+  qwen-flash with a 30-scenario pool: 6/6 natural-language queries
+  classified into the correct scenario at unchanged latency.
+
 ### Docs
 
 - README: added a rendered tiered-execution architecture diagram

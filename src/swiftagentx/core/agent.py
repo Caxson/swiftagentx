@@ -121,7 +121,9 @@ class Agent:
         self.tool_registry = ToolRegistry()
         self.tool_executor = ToolExecutor(self.tool_registry)
         self.scenario_engine = ScenarioEngine()
-        self.router = IntentRouter()
+        self.router = IntentRouter(
+            prefilter_top_k=self.config.scenario_prefilter_top_k,
+        )
         self.pipeline = RequestPipeline()
         self.termination_checker = TerminationChecker()
         self.hooks = HookRegistry()
@@ -458,6 +460,9 @@ class Agent:
         self.router.register_scenarios({scenario_id: {
             "name": scenario.name,
             "description": scenario.description,
+            # Triggers are retrieval anchors for the prefilter, not prompt
+            # content — they never inflate the classification prompt.
+            "triggers": scenario.triggers,
             "slots": sorted(scenario.required_vars()),
         }})
 

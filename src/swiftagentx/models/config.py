@@ -49,6 +49,11 @@ class SwiftAgentConfig(BaseModel):
     # Knowledge base
     kb_exact_match_threshold: float = 0.95
 
+    # Scenario retrieval pre-filter: max candidates shown to the intent
+    # classifier per request. Pools at or below this size are passed through
+    # unfiltered.
+    scenario_prefilter_top_k: int = 8
+
     # Layered memory (v0.3)
     memory_l2_size: int = 4
     memory_l3_max_size: int = 6
