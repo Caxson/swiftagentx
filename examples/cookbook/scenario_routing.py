@@ -16,17 +16,46 @@ Run::
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from swiftagentx import (
     Agent,
     DummyModelClient,
+    ModelResponse,
     ScenarioConfig,
     SwiftAgentConfig,
     Tool,
     ToolChainStep,
     ToolOutput,
 )
+
+
+class DemoRouterModel(DummyModelClient):
+    """Tiny scripted classifier so the demo really exercises Scenario routing."""
+
+    async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> ModelResponse:
+        prompt = messages[-1]["content"]
+        if "Respond with ONLY: continuing" in prompt:
+            return ModelResponse(content="continuing", model=self.model)
+        if "Classify the user" in prompt:
+            user_input = _extract_user_input(prompt).lower()
+            if "weather" in user_input or "temperature" in user_input:
+                return ModelResponse(
+                    content='level=2 scenario=weather slots={"city": "Tokyo"}',
+                    model=self.model,
+                )
+            if "balance" in user_input or "account" in user_input:
+                return ModelResponse(
+                    content='level=2 scenario=balance slots={}',
+                    model=self.model,
+                )
+        return await super().chat(messages, **kwargs)
+
+
+def _extract_user_input(prompt: str) -> str:
+    match = re.search(r"User input:\s*(.*?)\n\n", prompt, re.DOTALL)
+    return match.group(1) if match else prompt
 
 
 class WeatherTool(Tool):
@@ -51,8 +80,12 @@ class BalanceTool(Tool):
 
 async def main() -> None:
     agent = Agent(
-        model=DummyModelClient(api_key="demo", model="dummy"),
-        config=SwiftAgentConfig(name="scenario-demo"),
+        model=DemoRouterModel(api_key="demo", model="demo-router"),
+        config=SwiftAgentConfig(
+            name="scenario-demo",
+            enable_cache=False,
+            memory_enable_topic_change_hook=False,
+        ),
     )
     agent.register_tool(WeatherTool())
     agent.register_tool(BalanceTool())

@@ -1,9 +1,9 @@
 """
-SwiftAgent — Enterprise-grade fast-response Agent framework.
+SwiftAgentX — fast Agent framework for reusable Scenario chains.
 
 Features:
 - Dual-model strategy (light for classification, heavy for execution)
-- Scenario toolchains (skip ReAct for high-frequency patterns)
+- Dynamic Scenario chains (promote repeated reasoning into fast paths)
 - Three-level cache (KB / tool result / session)
 - SSE streaming with fine-grained events
 - Production-ready (middleware, tracing, exponential backoff)
@@ -78,7 +78,7 @@ from .tools.executor import ToolExecutor
 from .tools.registry import ToolRegistry
 from .tools.scenario import ScenarioConfig, ScenarioEngine, ToolChainStep
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = [
     # Core

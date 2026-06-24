@@ -6,6 +6,26 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-06-24
+
+### Changed
+
+- Repositioned the public README around **dynamic Scenario chains**:
+  repeated Agent reasoning can become reviewed, reusable, low-latency
+  Scenario chains instead of paying the full ReAct cost forever.
+- Updated package metadata to match the new Scenario-chain positioning.
+
+### Fixed
+
+- Added `httpx[socks]` to the `dev` extra so a clean
+  `pip install -e ".[dev]"` environment can run provider payload tests
+  without separately installing the OpenAI-compatible optional dependency.
+- Reworked no-key cookbook examples so they demonstrate the behavior their
+  titles promise: Scenario routing now really hits Scenarios, customer
+  service shows KB / Scenario / direct paths, RAG hits the local KB, and
+  tool-calling executes real tools through a scripted ReAct flow.
+- Cleaned stale `SwiftAgent` references in quickstart/package text.
+
 ## [0.4.0] — 2026-06-11
 
 ### Added

@@ -47,9 +47,10 @@ async def build_agent() -> Agent:
     ])
     agent.set_knowledge_base(kb)
 
-    # Mount the KB as a pipeline stage so high-confidence matches are returned
-    # before we hit input validation, intent classification, or the cache.
-    agent.pipeline.add_stage(KnowledgeBaseStage(kb=kb, threshold=0.85))
+    # Mount the KB as a pipeline stage so local-dev FAQ matches return before
+    # intent classification. Tune this threshold against your real KB data in
+    # production; the tiny TF-IDF demo corpus needs a lower value.
+    agent.pipeline.add_stage(KnowledgeBaseStage(kb=kb, threshold=0.35))
 
     return agent
 

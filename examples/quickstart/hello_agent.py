@@ -1,5 +1,5 @@
 """
-SwiftAgent Quickstart Example
+SwiftAgentX Quickstart Example
 
 This example shows how to create a basic agent with a custom tool.
 
@@ -37,7 +37,7 @@ async def main():
     agent.register_tool(EchoTool())
 
     # Run the agent
-    response = await agent.run("Hello, SwiftAgent!")
+    response = await agent.run("Hello, SwiftAgentX!")
     print(f"Answer: {response.answer}")
     print(f"Time: {response.execution_time_ms:.1f}ms")
     print(f"Iterations: {response.total_iterations}")

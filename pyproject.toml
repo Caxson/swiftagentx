@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "swiftagentx"
-version = "0.4.0"
-description = "Production-grade Agent framework with sub-second latency via tiered execution: three-level cache, dual-model routing, and scenario toolchains."
+version = "0.4.1"
+description = "Production Agent framework that turns repeated reasoning into reusable, low-latency Scenario chains."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -15,7 +15,7 @@ authors = [
 keywords = [
     "agent", "llm", "react", "sse", "streaming", "toolchain",
     "ai-agent", "agent-framework", "openai", "rag", "low-latency",
-    "production-ready", "scenario-routing", "knowledge-base",
+    "production-ready", "scenario-routing", "scenario-chains", "knowledge-base",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -45,6 +45,7 @@ fastapi = ["fastapi>=0.104.0", "uvicorn>=0.24.0"]
 mysql = ["PyMySQL>=1.1.0"]
 all = ["swiftagentx[openai,dashscope,flask,fastapi,mysql]"]
 dev = [
+    "httpx[socks]>=0.25.0",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",

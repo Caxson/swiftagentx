@@ -16,6 +16,7 @@ Run::
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from swiftagentx import (
@@ -23,12 +24,38 @@ from swiftagentx import (
     Document,
     DummyModelClient,
     MemoryKnowledgeBase,
+    ModelResponse,
     ScenarioConfig,
     SwiftAgentConfig,
     Tool,
     ToolChainStep,
     ToolOutput,
 )
+
+
+class DemoSupportModel(DummyModelClient):
+    """Scripted model that routes the demo's order request into a Scenario."""
+
+    async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> ModelResponse:
+        prompt = messages[-1]["content"]
+        if "Respond with ONLY: continuing" in prompt:
+            return ModelResponse(content="continuing", model=self.model)
+        if "Classify the user" in prompt:
+            user_input = _extract_user_input(prompt)
+            if "order" in user_input.lower():
+                order_match = re.search(r"\b[A-Z]\d{3}\b", user_input.upper())
+                order_id = order_match.group(0) if order_match else ""
+                return ModelResponse(
+                    content=f'level=2 scenario=order_status slots={{"order_id": "{order_id}"}}',
+                    model=self.model,
+                )
+            return ModelResponse(content="level=3", model=self.model)
+        return await super().chat(messages, **kwargs)
+
+
+def _extract_user_input(prompt: str) -> str:
+    match = re.search(r"User input:\s*(.*?)\n\n", prompt, re.DOTALL)
+    return match.group(1) if match else prompt
 
 
 class OrderStatusTool(Tool):
@@ -50,8 +77,13 @@ class OrderStatusTool(Tool):
 
 async def build_agent() -> Agent:
     agent = Agent(
-        model=DummyModelClient(api_key="demo", model="dummy"),
-        config=SwiftAgentConfig(name="customer-service", max_iterations=3, enable_cache=True),
+        model=DemoSupportModel(api_key="demo", model="demo-support"),
+        config=SwiftAgentConfig(
+            name="customer-service",
+            max_iterations=3,
+            enable_cache=True,
+            memory_enable_topic_change_hook=False,
+        ),
     )
 
     # 1. Knowledge base: exact matches return instantly with zero LLM calls.

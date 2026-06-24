@@ -1,7 +1,7 @@
 # SwiftAgentX
 
-**A production Agent framework built around *Scenarios* — pre-compiled
-execution paths that skip the ReAct loop entirely on known intents.**
+**A production Agent framework that turns repeated Agent reasoning into
+reusable, low-latency *Scenario chains*.**
 
 [![PyPI version](https://img.shields.io/pypi/v/swiftagentx.svg)](https://pypi.org/project/swiftagentx/)
 [![Python](https://img.shields.io/pypi/pyversions/swiftagentx.svg)](https://pypi.org/project/swiftagentx/)
@@ -15,15 +15,17 @@ execution paths that skip the ReAct loop entirely on known intents.**
 
 <a id="english"></a>
 
-## The core idea: Scenarios
+## The core idea: Dynamic Scenario chains
 
-Other frameworks treat every request as an open-ended reasoning problem.
-SwiftAgentX disagrees. In production, **80% of traffic is predictable**:
-"check my order status", "what's your return policy", "book a slot at 3pm".
-For these, a ReAct loop is overkill — three to five LLM calls, several
-seconds of latency, a token bill that nobody can explain.
+Other frameworks make every request pay the reasoning tax again. SwiftAgentX
+treats ReAct as exploration, not the final runtime path. In production,
+**80% of traffic is predictable**: "check my order status", "what's your
+return policy", "book a slot at 3pm". Once a pattern proves repeatable, it
+should become a reusable chain: cheaper, faster, and more deterministic.
 
-A **Scenario** is a *pre-compiled execution path*:
+A **Scenario** is the runtime form of that chain: a *pre-compiled execution
+path* that can be written by a developer or promoted from an AI-generated
+plan:
 
 ```python
 agent.register_scenario("order_status", ScenarioConfig(
@@ -40,12 +42,24 @@ agent.register_scenario("order_status", ScenarioConfig(
 
 When the LIGHT model classifies a request as a `weather` / `order_status` /
 `balance_check` scenario, SwiftAgentX **executes the chain directly** —
-no ReAct loop, no second LLM call. One classification step (LIGHT model,
-~200 ms), one tool chain, done.
+no ReAct loop, no second LLM call. One classification step (LIGHT model),
+one tool chain, done.
 
-This is the framework's biggest design bet, and the place it pulls ahead of
-LangChain / AutoGen / CrewAI by a margin that actually matters in
-production.
+The v0.4 Planner closes the loop for requests that are not Scenario-ready
+yet:
+
+1. A REACT-level request can spend one LIGHT-model call to generate a
+   templated tool chain.
+2. The chain runs through the same deterministic engine that executes
+   Scenarios.
+3. Successful plans become reviewable candidates.
+4. A developer can approve reuse, then promote the plan into a real Scenario
+   (or enable rule-based auto gates).
+5. Future matching requests take the Scenario shortcut.
+
+That is the framework's biggest design bet: **the Agent gets faster the more
+it runs**, because repeated reasoning can graduate into reusable Scenario
+chains instead of paying the full ReAct cost forever.
 
 ## Tiered execution
 
@@ -81,9 +95,9 @@ export DASHSCOPE_API_KEY=sk-...
 python benchmarks/real_runner.py --iterations 30
 ```
 
-### What goes inside a Scenario
+### What goes inside a Scenario chain
 
-A Scenario is not just a static tool list. Steps in a chain can be:
+A Scenario chain is not just a static tool list. Steps can be:
 
 - A native Python `Tool`
 - (v0.3+) An **MCP** tool — any
@@ -93,22 +107,22 @@ A Scenario is not just a static tool list. Steps in a chain can be:
   call, a sub-agent dispatch, or external shell logic when the chain hits
   a particular state
 
-This is how Scenarios stay fast *and* extensible: the routing decision is
-cheap, but each step can reach into the full agent toolkit when needed.
+This is how Scenario chains stay fast *and* extensible: the routing decision
+is cheap, but each step can reach into the full agent toolkit when needed.
 
 ### vs. LangChain / AutoGen / CrewAI
 
 |  | SwiftAgentX | LangChain | AutoGen | CrewAI |
 |---|:---:|:---:|:---:|:---:|
-| **Pre-compiled Scenario shortcut** | **✅ core differentiator** | ❌ no equivalent | ❌ no equivalent | ❌ no equivalent |
+| **AI-generated chains can graduate into Scenarios** | **✅ core differentiator** | ❌ no equivalent | ❌ no equivalent | ❌ no equivalent |
+| **Pre-compiled Scenario shortcut** | ✅ | ❌ no equivalent | ❌ no equivalent | ❌ no equivalent |
 | FAQ / cache-hit returns with 0 LLM calls | ✅ | 1-3 LLM calls | 2+ LLM calls | 2+ LLM calls |
 | Built-in three-level cache (KB / tool / session) | ✅ | partial | ❌ | ❌ |
 | Dual-model routing (LIGHT/HEAVY) baked in | ✅ | DIY | DIY | DIY |
 | Pipeline stage short-circuit (KB / security / feature flags) | ✅ | DIY | ❌ | ❌ |
 | Streaming with fine-grained event types | ✅ 12 types | ✅ | partial | ✅ |
 | Framework-agnostic core (no HTTP in `core/`) | ✅ | n/a | n/a | n/a |
-| Plans mined from live traffic graduate into Scenarios | ✅ v0.4 | ❌ | ❌ | ❌ |
-| Test suite size | 274 tests, **< 0.7 s** | huge | huge | medium |
+| Test suite size | 274 tests, **~1 s locally** | huge | huge | medium |
 
 LangChain is broader. SwiftAgentX is sharper for the predictable-traffic
 production patterns where latency and per-request LLM cost actually move
@@ -119,9 +133,12 @@ the needle.
 - You ship an Agent product where **most requests are predictable** (customer
   service, order ops, FAQ, internal copilots, AI outbound) and only a small
   tail needs real open-ended reasoning.
+- You want repeatable requests to **turn into reviewed runtime assets**,
+  instead of paying the same multi-step reasoning cost forever.
 - You care about **P95 latency and per-request LLM cost** as first-class
   metrics, not afterthoughts.
-- You want a framework you can **read in one afternoon** (4k lines of source)
+- You want a framework compact enough to **read in one afternoon** (~9k
+  lines of source)
   and modify without fear.
 - You're comfortable wiring tools, KBs, and scenarios in Python instead of
   YAML/DSL.
@@ -134,7 +151,8 @@ the unit of design, read on.
 
 | | Feature | What it does |
 |:--:|---|---|
-| 🎯 | **Scenarios** | Pre-compiled execution paths that skip the ReAct loop on known intents — the headline abstraction. Each chain step is a Python tool, an MCP tool, or a conditional hook. |
+| 🔁 | **Dynamic Scenario chains** | One LIGHT call can generate a templated tool chain for a REACT-level request; successful chains become reviewable candidates and can graduate into Scenarios. |
+| 🎯 | **Scenarios** | Pre-compiled execution paths that skip the ReAct loop on known intents — the runtime destination for stable chains. Each step is a Python tool, an MCP tool, or a conditional hook. |
 | 🪜 | **Tiered execution** | Pipeline short-circuit → Scenario → ReAct → Direct, picked per request by a LIGHT classifier. |
 | 🧭 | **Planner fast path** (v0.4) | One LIGHT call plans a REACT request's whole tool chain up front; the chain runs deterministically, failures fall back to ReAct. Successful plans graduate into Scenarios through two human-gated steps (approve reuse → promote). |
 | 🔍 | **Scenario prefilter** (v0.4) | Classifier prompt stays O(K) as the scenario pool grows: retrieval picks top-K candidates per request. Zero-dep lexical default, pluggable `EmbeddingRetriever` for semantic matching. |
@@ -147,10 +165,10 @@ the unit of design, read on.
 | 🧅 | **Middleware pipeline** | Tracing, retries, input validation, error sanitization. Hook into any stage. |
 | 🪶 | **No HTTP in core** | `httpx` is optional — run SwiftAgentX in a Lambda, a Celery worker, or a notebook. |
 
-## What's next (v0.3 roadmap)
+## Current v0.4 building blocks
 
-The v0.2.0 release hardens what's already here. v0.3+ goes after the
-2026-era patterns from frameworks like Claude Code:
+SwiftAgentX 0.4.x includes the 2026-era building blocks that make dynamic
+Scenario chains practical:
 
 - **MCP server support** — Scenarios and ReAct can use tools from any MCP
   server. One-line registration.
@@ -269,6 +287,8 @@ For a multi-user server, pass an explicit `session_id` per user instead.
 ### Custom Tools
 
 ```python
+import asyncio
+
 from swiftagentx import Agent, Tool, ToolOutput, DummyModelClient
 
 class WeatherTool(Tool):
@@ -284,6 +304,8 @@ async def main():
     agent.register_tool(WeatherTool())
     response = await agent.run("What's the weather in Beijing?")
     print(response.answer)
+
+asyncio.run(main())
 ```
 
 ### Dual-Model Strategy
@@ -307,24 +329,65 @@ agent = Agent(
 
 ### Scenario Toolchains
 
-Skip the ReAct loop for common request patterns:
+Skip the ReAct loop for common request patterns. This example is fully
+copy-paste runnable without a real API key:
 
 ```python
-from swiftagentx import Agent, ScenarioConfig, ToolChainStep, DummyModelClient
+import asyncio
 
-agent = Agent(model=DummyModelClient(api_key="test", model="dummy"))
-agent.register_tool(WeatherTool())
+from swiftagentx import (
+    Agent,
+    DummyModelClient,
+    ModelResponse,
+    ScenarioConfig,
+    SwiftAgentConfig,
+    Tool,
+    ToolChainStep,
+    ToolOutput,
+)
 
-agent.register_scenario("weather", ScenarioConfig(
-    name="Weather Query",
-    description="Get weather information",
-    triggers=["weather", "temperature", "forecast"],
-    tool_chain=[
-        ToolChainStep(tool="weather", query_template="$city"),
-    ],
-    cache_ttl=1800,
-    output_type="direct",
-))
+class RouterModel(DummyModelClient):
+    async def chat(self, messages, **kwargs):
+        prompt = messages[-1]["content"]
+        if "Classify the user" in prompt:
+            return ModelResponse(
+                content='level=2 scenario=weather slots={"city": "Beijing"}',
+                model=self.model,
+            )
+        return await super().chat(messages, **kwargs)
+
+class WeatherTool(Tool):
+    def __init__(self):
+        super().__init__(name="weather", description="Get weather for a city")
+
+    async def execute(self, context, **kwargs):
+        city = kwargs.get("city", "unknown")
+        return ToolOutput(success=True, result=f"Sunny, 25C in {city}")
+
+async def main():
+    agent = Agent(
+        model=RouterModel(api_key="test", model="router"),
+        config=SwiftAgentConfig(
+            enable_cache=False,
+            memory_enable_topic_change_hook=False,
+        ),
+    )
+    agent.register_tool(WeatherTool())
+    agent.register_scenario("weather", ScenarioConfig(
+        name="Weather Query",
+        description="Get weather information for a city",
+        triggers=["weather", "temperature", "forecast"],
+        tool_chain=[
+            ToolChainStep(tool="weather", kwargs_template={"city": "$city"}),
+        ],
+        cache_ttl=1800,
+        output_type="direct",
+    ))
+
+    response = await agent.run("What's the weather in Beijing?")
+    print(response.answer)  # Sunny, 25C in Beijing
+
+asyncio.run(main())
 ```
 
 When the light model classifies a request as a "weather" scenario, the framework executes the tool chain directly — no ReAct loop, no extra LLM calls.
@@ -679,17 +742,19 @@ Apache-2.0
 
 # SwiftAgentX
 
-**面向生产环境的 Agent 框架，围绕 *Scenario*（预编译执行路径）构建——
-在已知意图上完全跳过 ReAct 循环。**
+**面向生产环境的 Agent 框架：把重复的 Agent 推理沉淀成可复用、低延迟的
+*Scenario 场景链*。**
 
-## 核心理念：Scenario
+## 核心理念：动态场景链
 
-其它框架把每个请求都当作开放式推理问题对待。SwiftAgentX 不这么想。
-在生产环境中，**80% 的流量是可预测的**："查订单状态"、"问退货政策"、
-"预约 3 点的时段"。对这些请求来说，ReAct 循环是杀鸡用牛刀——
-3-5 次 LLM 调用、几秒延迟、一份没人解释得清楚的 token 账单。
+其它框架让每个请求都重新付一遍推理税。SwiftAgentX 不这么想：ReAct
+应该是探索路径，不应该是稳定流量的最终运行路径。在生产环境中，**80% 的
+流量是可预测的**："查订单状态"、"问退货政策"、"预约 3 点的时段"。
+一旦某类请求被证明可以复用，它就应该沉淀成一条工具链：更便宜、更快、
+也更确定。
 
-**Scenario 是一条预编译的执行路径**：
+**Scenario 是这条链的运行时形态**：一条预编译执行路径，可以由开发者手写，
+也可以由 AI 生成的 plan 转正而来：
 
 ```python
 agent.register_scenario("order_status", ScenarioConfig(
@@ -706,10 +771,18 @@ agent.register_scenario("order_status", ScenarioConfig(
 
 当 LIGHT 模型把请求分类为 `weather` / `order_status` / `balance_check` 这类
 场景时，SwiftAgentX **直接跑工具链**——不进 ReAct 循环，没有第二次 LLM
-调用。一次分类（LIGHT 模型，~200ms），一条工具链，结束。
+调用。一次分类（LIGHT 模型），一条工具链，结束。
 
-这是框架最大的设计赌注，也是它在生产环境延迟和成本上**真正甩开**
-LangChain / AutoGen / CrewAI 的地方。
+v0.4 的 Planner 把这个闭环补上了：
+
+1. REACT 级请求可以先花一次 LIGHT 模型调用生成模板化工具链。
+2. 这条链走和 Scenario 相同的确定性执行引擎。
+3. 成功执行的 plan 会进入可审查候选池。
+4. 开发者可以先放行复用，再把它转正为真正的 Scenario（也可以开启规则自动门）。
+5. 后续匹配请求直接走 Scenario 快速路径。
+
+这是框架最大的设计赌注：**Agent 跑得越多，越多重复推理会沉淀成可复用的
+高速场景链**，而不是永远为同一类问题支付完整 ReAct 成本。
 
 ## 分层执行
 
@@ -742,9 +815,9 @@ export DASHSCOPE_API_KEY=sk-...
 python benchmarks/real_runner.py --iterations 30
 ```
 
-### Scenario 里能装什么
+### Scenario 场景链里能装什么
 
-Scenario 不只是一个静态工具列表。链中的步骤可以是：
+Scenario 场景链不只是一个静态工具列表。链中的步骤可以是：
 
 - 一个原生 Python `Tool`
 - （v0.3+）一个 **MCP 工具**——任何
@@ -753,22 +826,22 @@ Scenario 不只是一个静态工具列表。链中的步骤可以是：
 - （v0.3+）一个 **hook**——条件触发器，当工具链命中特定状态时分支到
   LLM 调用、子 Agent 调度、或外部 shell 逻辑
 
-这就是 Scenario 既快又能扩展的方式：路由决策很便宜，但每一步都能在
+这就是 Scenario 场景链既快又能扩展的方式：路由决策很便宜，但每一步都能在
 需要时调用整个 Agent 工具箱。
 
 ### vs. LangChain / AutoGen / CrewAI
 
 |  | SwiftAgentX | LangChain | AutoGen | CrewAI |
 |---|:---:|:---:|:---:|:---:|
-| **预编译 Scenario 短路** | **✅ 核心差异化** | ❌ 无对应概念 | ❌ 无对应概念 | ❌ 无对应概念 |
+| **AI 生成的工具链可转正为 Scenario** | **✅ 核心差异化** | ❌ 无对应概念 | ❌ 无对应概念 | ❌ 无对应概念 |
+| **预编译 Scenario 短路** | ✅ | ❌ 无对应概念 | ❌ 无对应概念 | ❌ 无对应概念 |
 | FAQ / 缓存命中 0 LLM 调用 | ✅ | 1-3 LLM 调用 | 2+ LLM 调用 | 2+ LLM 调用 |
 | 内置三级缓存（KB / Tool / Session） | ✅ | 部分支持 | ❌ | ❌ |
 | 双模型路由（LIGHT/HEAVY）原生内置 | ✅ | 自己接 | 自己接 | 自己接 |
 | Pipeline 阶段短路（KB / 安全 / 功能开关） | ✅ | 自己写 | ❌ | ❌ |
 | 流式细粒度事件类型 | ✅ 12 种 | ✅ | 部分 | ✅ |
 | 框架无关核心（`core/` 不依赖 HTTP） | ✅ | n/a | n/a | n/a |
-| 从线上流量自动挖掘计划并转正为 Scenario | ✅ v0.4 | ❌ | ❌ | ❌ |
-| 测试套件 | 274 个测试，**< 0.7 秒** | 庞大 | 庞大 | 中等 |
+| 测试套件 | 274 个测试，**本地约 1 秒** | 庞大 | 庞大 | 中等 |
 
 LangChain 更广。SwiftAgentX 更专——专于流量可预测、延迟和单次
 LLM 成本是命门的生产场景。
@@ -777,8 +850,10 @@ LLM 成本是命门的生产场景。
 
 - 你做的 Agent 产品中，**多数请求是可预测的**（客服、订单运营、FAQ、
   内部 copilot、AI 外呼），只有少数尾部需要真正的开放式推理。
+- 你希望重复请求**沉淀成经过审查的运行时资产**，而不是永远重复支付多步
+  推理成本。
 - 你把 **P95 延迟和单次请求 LLM 成本**当作一等公民指标，不是事后再说。
-- 你想要一个**一下午能读完**（4k 行源码）、改起来不害怕的框架。
+- 你想要一个足够克制、**一下午能读完**（约 9k 行源码）、改起来不害怕的框架。
 - 你习惯用 Python 配置 tool / KB / scenario，不喜欢 YAML/DSL。
 
 如果你想要"什么集成都有"的瑞士军刀工具包，去用 LangChain。如果你想要
@@ -788,7 +863,8 @@ LLM 成本是命门的生产场景。
 
 | | 特性 | 说明 |
 |:--:|---|---|
-| 🎯 | **Scenario** | 在已知意图上跳过 ReAct 循环的预编译执行路径——框架头号抽象。链中每一步可以是 Python tool、MCP tool 或条件 hook。 |
+| 🔁 | **动态 Scenario 场景链** | 一次 LIGHT 调用可为 REACT 级请求生成模板化工具链；成功链路进入候选池，经审查后可转正为 Scenario。 |
+| 🎯 | **Scenario** | 在已知意图上跳过 ReAct 循环的预编译执行路径——稳定链路的运行时终点。链中每一步可以是 Python tool、MCP tool 或条件 hook。 |
 | 🪜 | **分层执行** | Pipeline 短路 → Scenario → ReAct → Direct，由 LIGHT 分类器为每个请求挑路径。 |
 | 🧭 | **Planner 快速通道**（v0.4） | 一次 LIGHT 调用为 REACT 请求一次性规划完整工具链，确定性执行，失败回落 ReAct。成功的计划经两道人工门（放行复用 → 转正）升级为 Scenario。 |
 | 🔍 | **Scenario 检索预筛**（v0.4） | 场景池再大，分类 prompt 恒定 O(K)：每个请求先检索出 top-K 候选。默认零依赖词法检索，可插拔 `EmbeddingRetriever` 做语义匹配。 |
@@ -801,10 +877,9 @@ LLM 成本是命门的生产场景。
 | 🧅 | **中间件流水线** | 追踪、重试、输入验证、错误脱敏，每个阶段都能挂 hook。 |
 | 🪶 | **核心层无 HTTP 依赖** | `httpx` 可选——可在 Lambda、Celery worker 或 Notebook 里跑。 |
 
-## 下一步（v0.3 路线图）
+## 当前 v0.4 能力底座
 
-v0.2.0 把现有的部分打磨扎实。v0.3+ 引入受 Claude Code 等 2026 范式
-框架启发的设计：
+SwiftAgentX 0.4.x 已经包含让动态 Scenario 场景链真正可落地的 2026 范式能力：
 
 - **MCP server 支持** — Scenario 和 ReAct 都能用任何 MCP server 的 tool。
   一行注册。
@@ -914,6 +989,8 @@ while user_input := input("You: "):
 ### 自定义工具
 
 ```python
+import asyncio
+
 from swiftagentx import Agent, Tool, ToolOutput, DummyModelClient
 
 class WeatherTool(Tool):
@@ -929,6 +1006,8 @@ async def main():
     agent.register_tool(WeatherTool())
     response = await agent.run("北京天气怎么样？")
     print(response.answer)
+
+asyncio.run(main())
 ```
 
 ### 双模型策略
@@ -952,24 +1031,65 @@ agent = Agent(
 
 ### 场景工具链
 
-跳过 ReAct 循环，直接执行预定义工具链：
+跳过 ReAct 循环，直接执行预定义工具链。下面这个例子不需要真实 API key，
+可以直接复制运行：
 
 ```python
-from swiftagentx import Agent, ScenarioConfig, ToolChainStep, DummyModelClient
+import asyncio
 
-agent = Agent(model=DummyModelClient(api_key="test", model="dummy"))
-agent.register_tool(WeatherTool())
+from swiftagentx import (
+    Agent,
+    DummyModelClient,
+    ModelResponse,
+    ScenarioConfig,
+    SwiftAgentConfig,
+    Tool,
+    ToolChainStep,
+    ToolOutput,
+)
 
-agent.register_scenario("weather", ScenarioConfig(
-    name="天气查询",
-    description="查询指定城市天气",
-    triggers=["天气", "气温", "下雨"],
-    tool_chain=[
-        ToolChainStep(tool="weather", query_template="$city"),
-    ],
-    cache_ttl=1800,           # 缓存 30 分钟
-    output_type="direct",     # 直接返回工具结果，无需 LLM 二次处理
-))
+class RouterModel(DummyModelClient):
+    async def chat(self, messages, **kwargs):
+        prompt = messages[-1]["content"]
+        if "Classify the user" in prompt:
+            return ModelResponse(
+                content='level=2 scenario=weather slots={"city": "北京"}',
+                model=self.model,
+            )
+        return await super().chat(messages, **kwargs)
+
+class WeatherTool(Tool):
+    def __init__(self):
+        super().__init__(name="weather", description="查询城市天气")
+
+    async def execute(self, context, **kwargs):
+        city = kwargs.get("city", "未知")
+        return ToolOutput(success=True, result=f"{city}：晴，25°C")
+
+async def main():
+    agent = Agent(
+        model=RouterModel(api_key="test", model="router"),
+        config=SwiftAgentConfig(
+            enable_cache=False,
+            memory_enable_topic_change_hook=False,
+        ),
+    )
+    agent.register_tool(WeatherTool())
+    agent.register_scenario("weather", ScenarioConfig(
+        name="天气查询",
+        description="查询指定城市天气",
+        triggers=["天气", "气温", "下雨"],
+        tool_chain=[
+            ToolChainStep(tool="weather", kwargs_template={"city": "$city"}),
+        ],
+        cache_ttl=1800,           # 缓存 30 分钟
+        output_type="direct",     # 直接返回工具结果，无需 LLM 二次处理
+    ))
+
+    response = await agent.run("北京天气怎么样？")
+    print(response.answer)  # 北京：晴，25°C
+
+asyncio.run(main())
 ```
 
 当轻量模型将请求分类为 "weather" 场景时，框架直接执行工具链——不进 ReAct 循环，不产生额外 LLM 调用。
