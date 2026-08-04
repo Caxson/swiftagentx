@@ -12,7 +12,9 @@ Regression tests for v0.3.1 frictions:
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import time
 from typing import Any
 
 import pytest
@@ -473,6 +475,201 @@ async def test_scenario_cache_isolated_per_user() -> None:
     await agent.run("where is my order?", user_id="alice", session_id="sa")
     await agent.run("where is my order?", user_id="bob", session_id="sb")
     assert tool.calls == 2, f"per-user keys should not share; got {tool.calls}"
+
+
+# ---------------------------------------------------------------------------
+# D1 — Scenario parallel step groups (structure + executor)
+#
+# `ScenarioConfig.tool_chain` stays a plain list; a parallel group is just
+# a nested list of steps with no dependencies between them — fan out via
+# `asyncio.gather`, join, then continue the chain. No graph abstraction.
+# ---------------------------------------------------------------------------
+
+
+class _SleepyTool:
+    """Tool that sleeps briefly and records its own start/end times, so a
+    test can prove two steps in a parallel group actually overlap instead
+    of running one after another."""
+
+    def __init__(self, name: str, delay: float, result: str) -> None:
+        from swiftagentx import ToolOutput, ToolOutputType
+        self._ToolOutput = ToolOutput
+        self.name = name
+        self.description = "sleeps then returns a fixed result"
+        self.category = "test"
+        self.output_type = ToolOutputType.LLM_PROCESSED
+        self.timeout_seconds = 5
+        self.max_retries = 1
+        self._delay = delay
+        self._result = result
+        self.started_at: float = 0.0
+        self.finished_at: float = 0.0
+
+    def get_schema(self) -> dict[str, Any]:
+        return {"name": self.name, "description": self.description,
+                "parameters": {"type": "object", "properties": {}}}
+
+    def validate_input(self, **kwargs: Any) -> bool:
+        return True
+
+    async def execute(self, context: Any, **kwargs: Any):
+        import time
+
+        self.started_at = time.monotonic()
+        await asyncio.sleep(self._delay)
+        self.finished_at = time.monotonic()
+        return self._ToolOutput(success=True, result=self._result)
+
+
+class _KwargsRecordingTool:
+    """A Tool that records every kwargs dict it was called with."""
+
+    def __init__(self, name: str) -> None:
+        from swiftagentx import ToolOutput, ToolOutputType
+        self._ToolOutput = ToolOutput
+        self.name = name
+        self.description = "records kwargs"
+        self.category = "test"
+        self.output_type = ToolOutputType.LLM_PROCESSED
+        self.timeout_seconds = 5
+        self.max_retries = 1
+        self.invocations: list[dict[str, Any]] = []
+
+    def get_schema(self) -> dict[str, Any]:
+        return {"name": self.name, "description": self.description,
+                "parameters": {"type": "object", "properties": {}}}
+
+    def validate_input(self, **kwargs: Any) -> bool:
+        return True
+
+    async def execute(self, context: Any, **kwargs: Any):
+        self.invocations.append(dict(kwargs))
+        return self._ToolOutput(success=True, result="ok")
+
+
+def _direct_scenario_env() -> tuple[Any, Any, Any]:
+    """Bare ToolRegistry + ToolExecutor + SessionContext, no Agent — D1
+    lives entirely inside `ScenarioEngine.execute_config`, so exercise the
+    engine directly instead of round-tripping through a full Agent."""
+    from swiftagentx import SessionContext, ToolExecutor, ToolRegistry
+
+    registry = ToolRegistry()
+    executor = ToolExecutor(registry)
+    context = SessionContext(session_id="s1", user_id="u1", user_input="go")
+    return registry, executor, context
+
+
+@pytest.mark.asyncio
+async def test_parallel_group_runs_steps_concurrently() -> None:
+    """A parallel group `[stepA, stepB]` must run stepA and stepB
+    concurrently (asyncio.gather), not one after another — their execution
+    windows must overlap and total wall time must stay near a single
+    step's delay, not the sum of both."""
+    from swiftagentx import ScenarioConfig, ScenarioEngine, ToolChainStep
+
+    registry, executor, context = _direct_scenario_env()
+    tool_a = _SleepyTool("sleepy_a", delay=0.15, result="A-done")
+    tool_b = _SleepyTool("sleepy_b", delay=0.15, result="B-done")
+    registry.register(tool_a)  # type: ignore[arg-type]
+    registry.register(tool_b)  # type: ignore[arg-type]
+
+    engine = ScenarioEngine()
+    scenario = ScenarioConfig(
+        name="fan_out", triggers=[],
+        tool_chain=[[
+            ToolChainStep(tool="sleepy_a"),
+            ToolChainStep(tool="sleepy_b"),
+        ]],
+    )
+
+    start = time.monotonic()
+    result = await engine.execute_config(scenario, "fan_out", context, executor)
+    elapsed = time.monotonic() - start
+
+    assert result.success
+    # Sequential execution would take >= 0.3s; concurrent stays well under it.
+    assert elapsed < 0.28, f"steps did not run concurrently, took {elapsed:.3f}s"
+    assert tool_a.started_at < tool_b.finished_at
+    assert tool_b.started_at < tool_a.finished_at
+
+
+@pytest.mark.asyncio
+async def test_parallel_group_merges_results_and_injects_variables() -> None:
+    """Each step's `extract_to` result must land in the shared variable bag
+    so a later serial step can reference both via `$var` templates."""
+    from swiftagentx import ScenarioConfig, ScenarioEngine, ToolChainStep
+
+    registry, executor, context = _direct_scenario_env()
+    registry.register(_SleepyTool("fetch_price", delay=0.01, result="42"))  # type: ignore[arg-type]
+    registry.register(_SleepyTool("fetch_stock", delay=0.01, result="in_stock"))  # type: ignore[arg-type]
+    combine = _KwargsRecordingTool("combine")
+    registry.register(combine)  # type: ignore[arg-type]
+
+    engine = ScenarioEngine()
+    scenario = ScenarioConfig(
+        name="fan_out_join", triggers=[],
+        tool_chain=[
+            [
+                ToolChainStep(tool="fetch_price", extract_to="price"),
+                ToolChainStep(tool="fetch_stock", extract_to="stock"),
+            ],
+            ToolChainStep(tool="combine",
+                          kwargs_template={"price": "$price", "stock": "$stock"}),
+        ],
+        output_type="direct",
+    )
+
+    result = await engine.execute_config(scenario, "fan_out_join", context, executor)
+
+    assert result.success
+    assert combine.invocations == [{"price": "42", "stock": "in_stock"}]
+
+
+@pytest.mark.asyncio
+async def test_parallel_group_failure_stops_chain() -> None:
+    """If any step in a parallel group fails, the scenario stops after the
+    group joins — same default behaviour as a failing serial step. A
+    configurable fail_fast/best_effort policy is scoped to D2."""
+    from swiftagentx import ScenarioConfig, ScenarioEngine, ToolChainStep, ToolOutput, ToolOutputType
+
+    registry, executor, context = _direct_scenario_env()
+
+    class _FailingTool:
+        name = "flaky"
+        description = "always fails"
+        category = "test"
+        output_type = ToolOutputType.LLM_PROCESSED
+        timeout_seconds = 5
+        max_retries = 1
+
+        def get_schema(self) -> dict[str, Any]:
+            return {"name": self.name, "description": self.description,
+                    "parameters": {"type": "object", "properties": {}}}
+
+        def validate_input(self, **kwargs: Any) -> bool:
+            return True
+
+        async def execute(self, context: Any, **kwargs: Any) -> Any:
+            return ToolOutput(success=False, result=None, error="boom")
+
+    after_tool = _KwargsRecordingTool("after")
+    registry.register(_SleepyTool("ok_step", delay=0.01, result="fine"))  # type: ignore[arg-type]
+    registry.register(_FailingTool())  # type: ignore[arg-type]
+    registry.register(after_tool)  # type: ignore[arg-type]
+
+    engine = ScenarioEngine()
+    scenario = ScenarioConfig(
+        name="fan_out_fail", triggers=[],
+        tool_chain=[
+            [ToolChainStep(tool="ok_step"), ToolChainStep(tool="flaky")],
+            ToolChainStep(tool="after"),
+        ],
+    )
+
+    result = await engine.execute_config(scenario, "fan_out_fail", context, executor)
+
+    assert result.success is False
+    assert after_tool.invocations == [], "chain must not continue past a failed group"
 
 
 # ---------------------------------------------------------------------------
