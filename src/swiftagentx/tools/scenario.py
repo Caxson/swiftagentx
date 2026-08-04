@@ -4,6 +4,7 @@ Scenario toolchain engine — executes pre-defined tool chains for high-frequenc
 Scenarios skip the full ReAct loop, saving 2-3 LLM calls for common request patterns.
 """
 
+import asyncio
 import logging
 from collections.abc import Callable
 from string import Template
@@ -37,16 +38,31 @@ class ToolChainStep(BaseModel):
     kwargs_template: dict[str, str] = Field(default_factory=dict)
 
 
+# A tool_chain entry is either a single step, or a *parallel group*: a list
+# of steps with no dependencies between them, fanned out with
+# ``asyncio.gather`` and joined before the chain continues. Kept as a plain
+# list-of-lists on purpose — no graph/DAG abstraction.
+ToolChainEntry = ToolChainStep | list[ToolChainStep]
+
+
 class ScenarioConfig(BaseModel):
     """Configuration for a scenario toolchain."""
     name: str
     description: str = ""
     triggers: list[str] = Field(default_factory=list)
-    tool_chain: list[ToolChainStep] = Field(default_factory=list)
+    tool_chain: list[ToolChainEntry] = Field(default_factory=list)
     cache_key_template: str = ""
     cache_ttl: int = 3600
     output_template: str = "llm"
     output_type: str = "llm_processed"  # "direct" | "llm_processed"
+
+    def iter_steps(self) -> list[ToolChainStep]:
+        """Flatten ``tool_chain`` into its individual steps, in order —
+        parallel groups expand in place."""
+        steps: list[ToolChainStep] = []
+        for entry in self.tool_chain:
+            steps.extend(entry if isinstance(entry, list) else [entry])
+        return steps
 
     def required_vars(self) -> set[str]:
         """Template variables this scenario must be given from outside.
@@ -64,9 +80,10 @@ class ScenarioConfig(BaseModel):
         import re
 
         reserved = {"user_input", "user_id", "session_id"}
-        produced = {s.extract_to for s in self.tool_chain if s.extract_to}
+        steps = self.iter_steps()
+        produced = {s.extract_to for s in steps if s.extract_to}
         names: set[str] = set()
-        for step in self.tool_chain:
+        for step in steps:
             templates = list(step.kwargs_template.values())
             if step.query_template:
                 templates.append(step.query_template)
@@ -109,7 +126,7 @@ class ScenarioEngine:
                 "description": sc.description,
                 "triggers": sc.triggers,
                 "cache_ttl": sc.cache_ttl,
-                "tool_count": len(sc.tool_chain),
+                "tool_count": len(sc.iter_steps()),
             }
             for sid, sc in self._scenarios.items()
         }
@@ -207,46 +224,51 @@ class ScenarioEngine:
         collected: dict[str, Any] = extra_vars or {}
         last_output: ToolOutput | None = None
 
-        for step in scenario.tool_chain:
-            # Check condition
-            if step.condition == "never":
+        for entry in scenario.tool_chain:
+            # A plain step is just a parallel "group" of one — same code
+            # path either way, no dependencies to reason about within a
+            # group by construction.
+            group = [s for s in (entry if isinstance(entry, list) else [entry])
+                     if s.condition != "never"]
+            if not group:
                 continue
 
-            # Build tool input. Prefer the new dict-shaped kwargs_template
-            # (each value is a $foo Template) so multi-parameter tools —
-            # including most MCP tools whose schema is shaped like
-            # add(a, b) rather than tool(query) — work inside a Scenario
-            # chain. Fall back to the legacy single-"query" query_template
-            # for back compatibility.
-            tool_kwargs: dict[str, Any] = {}
-            if step.kwargs_template:
-                for key, tmpl in step.kwargs_template.items():
-                    try:
-                        tool_kwargs[key] = Template(tmpl).safe_substitute(collected)
-                    except (KeyError, ValueError):
-                        tool_kwargs[key] = tmpl
-            elif step.query_template:
-                try:
-                    tool_kwargs["query"] = Template(step.query_template).safe_substitute(collected)
-                except (KeyError, ValueError):
-                    tool_kwargs["query"] = step.query_template
+            # Build every step's tool input from one snapshot of `collected`
+            # taken before the group runs — steps in a group are declared
+            # to have no dependencies on each other, so none of them may
+            # see another group member's output.
+            pairs: list[tuple[ToolChainStep, dict[str, Any]]] = [
+                (step, self._render_kwargs(step, collected)) for step in group
+            ]
 
             if step_callback is not None:
-                await step_callback("before", step, tool_kwargs, None)
+                for step, tool_kwargs in pairs:
+                    await step_callback("before", step, tool_kwargs, None)
 
-            # Execute tool
-            output = await tool_executor.execute(step.tool, context, **tool_kwargs)
+            outputs = await asyncio.gather(
+                *(tool_executor.execute(step.tool, context, **tool_kwargs)
+                  for step, tool_kwargs in pairs),
+                return_exceptions=True,
+            )
 
-            if output.success and step.extract_to:
-                collected[step.extract_to] = output.result
+            group_failed = False
+            for (step, tool_kwargs), output in zip(pairs, outputs, strict=True):
+                if isinstance(output, BaseException):
+                    output = ToolOutput(success=False, result=None, error=str(output))
 
-            last_output = output
+                if output.success and step.extract_to:
+                    collected[step.extract_to] = output.result
 
-            if step_callback is not None:
-                await step_callback("after", step, tool_kwargs, output)
+                last_output = output
 
-            if not output.success:
-                logger.warning(f"Scenario '{scenario_id}' step '{step.tool}' failed: {output.error}")
+                if step_callback is not None:
+                    await step_callback("after", step, tool_kwargs, output)
+
+                if not output.success:
+                    logger.warning(f"Scenario '{scenario_id}' step '{step.tool}' failed: {output.error}")
+                    group_failed = True
+
+            if group_failed:
                 break
 
         if last_output is None:
@@ -262,7 +284,8 @@ class ScenarioEngine:
         # (user_id / user_input / session_id) when no step used extract_to
         # — that's the original Scenario-shortcut bug surfaced in
         # dogfooding (Friction #7).
-        any_extracted = any(step.extract_to for step in scenario.tool_chain)
+        steps = scenario.iter_steps()
+        any_extracted = any(step.extract_to for step in steps)
         if scenario.output_type == "direct":
             output_type = ToolOutputType.DIRECT_OUTPUT
             result_value: Any = last_output.result
@@ -275,5 +298,30 @@ class ScenarioEngine:
             result=result_value,
             error=last_output.error,
             output_type=output_type,
-            metadata={"scenario": scenario_id, "steps_executed": len(scenario.tool_chain)},
+            metadata={"scenario": scenario_id, "steps_executed": len(steps)},
         )
+
+    @staticmethod
+    def _render_kwargs(step: ToolChainStep, collected: dict[str, Any]) -> dict[str, Any]:
+        """Render a step's ``kwargs_template``/``query_template`` against
+        the variable bag collected so far.
+
+        Prefers the dict-shaped ``kwargs_template`` (each value a ``$foo``
+        Template) so multi-parameter tools — including most MCP tools whose
+        schema is shaped like ``add(a, b)`` rather than ``tool(query)`` —
+        work inside a Scenario chain. Falls back to the legacy single-
+        "query" ``query_template`` for back compatibility.
+        """
+        tool_kwargs: dict[str, Any] = {}
+        if step.kwargs_template:
+            for key, tmpl in step.kwargs_template.items():
+                try:
+                    tool_kwargs[key] = Template(tmpl).safe_substitute(collected)
+                except (KeyError, ValueError):
+                    tool_kwargs[key] = tmpl
+        elif step.query_template:
+            try:
+                tool_kwargs["query"] = Template(step.query_template).safe_substitute(collected)
+            except (KeyError, ValueError):
+                tool_kwargs["query"] = step.query_template
+        return tool_kwargs

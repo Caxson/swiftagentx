@@ -11,9 +11,10 @@
 
 ## 进度
 
-- [ ] **D1 · Scenario 并行步骤组（结构 + 执行器）**
+- [x] **D1 · Scenario 并行步骤组（结构 + 执行器）**（完成于 2026-08-04）
   `ScenarioConfig.tool_chain` 支持并行组（一组无依赖 step fan-out 后 join，`asyncio.gather`），数据结构保持 list-of-lists 级别的简单扩展，不引入图抽象。
   验证：单测（并行结果合并、变量注入）+ benchmark 对比同链串行 vs 并行的 P50。
+  benchmark 待本地补测（云端环境无法跑真实 LLM/网络延迟对比）。
 
 - [ ] **D2 · 并行组失败语义与条件边**
   并行组的部分失败策略（`fail_fast` / `best_effort`），step `condition` 在 join 后统一求值；失败回退到 ReAct 的现有路径保持不变。
