@@ -673,6 +673,209 @@ async def test_parallel_group_failure_stops_chain() -> None:
 
 
 # ---------------------------------------------------------------------------
+# D2 — Parallel group failure semantics + conditional edges
+#
+# `ScenarioConfig.on_group_failure` ("fail_fast" | "best_effort") controls
+# whether a partial group failure stops the chain (default, same as D1) or
+# lets the chain continue with whatever the surviving steps produced.
+# `ToolChainStep.condition` is evaluated against the joined variable bag
+# right before its entry runs — after the previous group/step has joined —
+# so a step can branch on an earlier group's results. Still no expression
+# language: `always` / `never` / `$var` / `!$var` / `$var == lit` / `$var != lit`.
+# ---------------------------------------------------------------------------
+
+
+def _make_failing_tool(name: str) -> Any:
+    from swiftagentx import ToolOutput, ToolOutputType
+
+    class _FailingTool:
+        def __init__(self) -> None:
+            self.name = name
+            self.description = "always fails"
+            self.category = "test"
+            self.output_type = ToolOutputType.LLM_PROCESSED
+            self.timeout_seconds = 5
+            self.max_retries = 1
+
+        def get_schema(self) -> dict[str, Any]:
+            return {"name": self.name, "description": self.description,
+                    "parameters": {"type": "object", "properties": {}}}
+
+        def validate_input(self, **kwargs: Any) -> bool:
+            return True
+
+        async def execute(self, context: Any, **kwargs: Any) -> Any:
+            return ToolOutput(success=False, result=None, error="boom")
+
+    return _FailingTool()
+
+
+@pytest.mark.asyncio
+async def test_best_effort_group_failure_continues_chain() -> None:
+    """With `on_group_failure="best_effort"`, a partial group failure does
+    not stop the chain — the surviving steps' `extract_to` values are still
+    available to later steps, and the failed step is recorded but does not
+    abort execution."""
+    from swiftagentx import ScenarioConfig, ScenarioEngine, ToolChainStep
+
+    registry, executor, context = _direct_scenario_env()
+    after_tool = _KwargsRecordingTool("after")
+    registry.register(_SleepyTool("ok_step", delay=0.01, result="fine"))  # type: ignore[arg-type]
+    registry.register(_make_failing_tool("flaky"))
+    registry.register(after_tool)  # type: ignore[arg-type]
+
+    engine = ScenarioEngine()
+    scenario = ScenarioConfig(
+        name="fan_out_best_effort", triggers=[],
+        tool_chain=[
+            [ToolChainStep(tool="ok_step", extract_to="ok"), ToolChainStep(tool="flaky", extract_to="bad")],
+            ToolChainStep(tool="after", kwargs_template={"ok": "$ok"}),
+        ],
+        on_group_failure="best_effort",
+    )
+
+    result = await engine.execute_config(scenario, "fan_out_best_effort", context, executor)
+
+    assert after_tool.invocations == [{"ok": "fine"}], "chain must continue past a partial group failure"
+    assert result.success, "final result reflects the last step, which succeeded"
+    assert result.metadata["failed_steps"] == ["flaky"]
+
+
+@pytest.mark.asyncio
+async def test_fail_fast_records_failed_steps_in_metadata() -> None:
+    """The default fail_fast policy still exposes which step(s) failed."""
+    from swiftagentx import ScenarioConfig, ScenarioEngine, ToolChainStep
+
+    registry, executor, context = _direct_scenario_env()
+    registry.register(_make_failing_tool("flaky"))
+
+    engine = ScenarioEngine()
+    scenario = ScenarioConfig(
+        name="fail_fast_meta", triggers=[],
+        tool_chain=[ToolChainStep(tool="flaky")],
+    )
+
+    result = await engine.execute_config(scenario, "fail_fast_meta", context, executor)
+
+    assert result.success is False
+    assert result.metadata["failed_steps"] == ["flaky"]
+
+
+@pytest.mark.asyncio
+async def test_condition_skips_step_based_on_joined_variable() -> None:
+    """A step's `condition` referencing `$var` is evaluated after the
+    producing group/step has joined, so it can branch on that result."""
+    from swiftagentx import ScenarioConfig, ScenarioEngine, ToolChainStep
+
+    registry, executor, context = _direct_scenario_env()
+    registry.register(_SleepyTool("check_stock", delay=0.01, result="in_stock"))  # type: ignore[arg-type]
+    restock_tool = _KwargsRecordingTool("restock")
+    ship_tool = _KwargsRecordingTool("ship")
+    registry.register(restock_tool)
+    registry.register(ship_tool)
+
+    engine = ScenarioEngine()
+    scenario = ScenarioConfig(
+        name="conditional", triggers=[],
+        tool_chain=[
+            ToolChainStep(tool="check_stock", extract_to="stock"),
+            ToolChainStep(tool="restock", condition="$stock == out_of_stock"),
+            ToolChainStep(tool="ship", condition="$stock == in_stock"),
+        ],
+    )
+
+    result = await engine.execute_config(scenario, "conditional", context, executor)
+
+    assert result.success
+    assert restock_tool.invocations == [], "condition must skip the non-matching branch"
+    assert ship_tool.invocations == [{}], "condition must run the matching branch"
+
+
+@pytest.mark.asyncio
+async def test_condition_truthy_and_negation_forms() -> None:
+    """`$var` runs a step iff the value is truthy; `!$var` iff falsy."""
+    from swiftagentx import ScenarioConfig, ScenarioEngine, ToolChainStep
+
+    registry, executor, context = _direct_scenario_env()
+    registry.register(_SleepyTool("lookup", delay=0.01, result=""))  # type: ignore[arg-type]
+    on_found = _KwargsRecordingTool("on_found")
+    on_missing = _KwargsRecordingTool("on_missing")
+    registry.register(on_found)
+    registry.register(on_missing)
+
+    engine = ScenarioEngine()
+    scenario = ScenarioConfig(
+        name="truthy", triggers=[],
+        tool_chain=[
+            ToolChainStep(tool="lookup", extract_to="found"),
+            ToolChainStep(tool="on_found", condition="$found"),
+            ToolChainStep(tool="on_missing", condition="!$found"),
+        ],
+    )
+
+    result = await engine.execute_config(scenario, "truthy", context, executor)
+
+    assert result.success
+    assert on_found.invocations == [], "empty string is falsy, must skip"
+    assert on_missing.invocations == [{}], "negated condition must run"
+
+
+@pytest.mark.asyncio
+async def test_condition_never_still_skips_step() -> None:
+    """Backward compatible: `condition="never"` keeps unconditionally
+    skipping a step."""
+    from swiftagentx import ScenarioConfig, ScenarioEngine, ToolChainStep
+
+    registry, executor, context = _direct_scenario_env()
+    skipped = _KwargsRecordingTool("skipped")
+    registry.register(skipped)
+
+    engine = ScenarioEngine()
+    scenario = ScenarioConfig(
+        name="never", triggers=[],
+        tool_chain=[ToolChainStep(tool="skipped", condition="never")],
+    )
+
+    result = await engine.execute_config(scenario, "never", context, executor)
+
+    assert skipped.invocations == []
+    # An entirely-skipped chain falls back to the "no step ran" branch.
+    assert result.success
+
+
+@pytest.mark.asyncio
+async def test_condition_and_best_effort_combine_in_parallel_group() -> None:
+    """Full matrix: a parallel group with one failing step (best_effort) and
+    a later step whose condition depends on the surviving step's output."""
+    from swiftagentx import ScenarioConfig, ScenarioEngine, ToolChainStep
+
+    registry, executor, context = _direct_scenario_env()
+    registry.register(_SleepyTool("fetch_a", delay=0.01, result="ready"))  # type: ignore[arg-type]
+    registry.register(_make_failing_tool("fetch_b"))
+    proceed_tool = _KwargsRecordingTool("proceed")
+    abort_tool = _KwargsRecordingTool("abort")
+    registry.register(proceed_tool)
+    registry.register(abort_tool)
+
+    engine = ScenarioEngine()
+    scenario = ScenarioConfig(
+        name="matrix", triggers=[],
+        tool_chain=[
+            [ToolChainStep(tool="fetch_a", extract_to="a"), ToolChainStep(tool="fetch_b", extract_to="b")],
+            ToolChainStep(tool="proceed", condition="$a == ready"),
+            ToolChainStep(tool="abort", condition="!$b"),
+        ],
+        on_group_failure="best_effort",
+    )
+
+    result = await engine.execute_config(scenario, "matrix", context, executor)
+
+    assert proceed_tool.invocations == [{}]
+    assert abort_tool.invocations == [{}]
+    assert result.metadata["failed_steps"] == ["fetch_b"]
+
+
+# ---------------------------------------------------------------------------
 # Friction #9 — Middleware chain must actually execute around run()
 # ---------------------------------------------------------------------------
 
