@@ -55,6 +55,7 @@ class ScenarioConfig(BaseModel):
     cache_ttl: int = 3600
     output_template: str = "llm"
     output_type: str = "llm_processed"  # "direct" | "llm_processed"
+    on_group_failure: str = "fail_fast"  # "fail_fast" | "best_effort"
 
     def iter_steps(self) -> list[ToolChainStep]:
         """Flatten ``tool_chain`` into its individual steps, in order —
@@ -87,6 +88,8 @@ class ScenarioConfig(BaseModel):
             templates = list(step.kwargs_template.values())
             if step.query_template:
                 templates.append(step.query_template)
+            if step.condition:
+                templates.append(step.condition)
             for tmpl in templates:
                 names.update(re.findall(r"\$(\w+)", tmpl))
         return names - reserved - produced
@@ -223,13 +226,16 @@ class ScenarioEngine:
 
         collected: dict[str, Any] = extra_vars or {}
         last_output: ToolOutput | None = None
+        failed_steps: list[str] = []
 
         for entry in scenario.tool_chain:
             # A plain step is just a parallel "group" of one — same code
             # path either way, no dependencies to reason about within a
-            # group by construction.
+            # group by construction. Conditions are evaluated here, against
+            # `collected` as joined by the previous entry, so a step can
+            # branch on an earlier group's results.
             group = [s for s in (entry if isinstance(entry, list) else [entry])
-                     if s.condition != "never"]
+                     if self._eval_condition(s.condition, collected)]
             if not group:
                 continue
 
@@ -267,8 +273,9 @@ class ScenarioEngine:
                 if not output.success:
                     logger.warning(f"Scenario '{scenario_id}' step '{step.tool}' failed: {output.error}")
                     group_failed = True
+                    failed_steps.append(step.tool)
 
-            if group_failed:
+            if group_failed and scenario.on_group_failure != "best_effort":
                 break
 
         if last_output is None:
@@ -298,8 +305,39 @@ class ScenarioEngine:
             result=result_value,
             error=last_output.error,
             output_type=output_type,
-            metadata={"scenario": scenario_id, "steps_executed": len(steps)},
+            metadata={"scenario": scenario_id, "steps_executed": len(steps), "failed_steps": failed_steps},
         )
+
+    @staticmethod
+    def _eval_condition(condition: str, collected: dict[str, Any]) -> bool:
+        """Evaluate a step's ``condition`` against the variable bag as
+        joined by the previous entry — so a step can branch on an earlier
+        (possibly parallel) group's results. Deliberately minimal, no
+        expression language:
+
+        - ``"always"`` (default) / ``""``: always run.
+        - ``"never"``: never run.
+        - ``"$var"``: run iff ``collected[var]`` is truthy.
+        - ``"!$var"``: run iff ``collected[var]`` is falsy (or missing).
+        - ``"$var == literal"`` / ``"$var != literal"``: string equality
+          against the collected value.
+        """
+        condition = condition.strip()
+        if condition in ("", "always"):
+            return True
+        if condition == "never":
+            return False
+        if condition.startswith("!$"):
+            return not collected.get(condition[2:])
+        if condition.startswith("$"):
+            for op in ("==", "!="):
+                if op in condition:
+                    var_part, _, literal = condition.partition(op)
+                    value = str(collected.get(var_part.strip().lstrip("$"), ""))
+                    literal = literal.strip().strip("'\"")
+                    return (value == literal) if op == "==" else (value != literal)
+            return bool(collected.get(condition[1:]))
+        return True
 
     @staticmethod
     def _render_kwargs(step: ToolChainStep, collected: dict[str, Any]) -> dict[str, Any]:
