@@ -59,14 +59,15 @@ class TestAdminStatus:
         assert "knowledge_base" in status["tools"]
 
     def test_get_tools_empty(self, service):
+        # "Empty" means no user-registered tools — `workspace_read` is a
+        # built-in every Agent auto-registers for context offload (D3).
         tools = service.get_tools()
         assert isinstance(tools, list)
-        assert len(tools) == 0
+        assert [t["name"] for t in tools] == ["workspace_read"]
 
     def test_get_tools_with_kb(self, service_with_kb):
         tools = service_with_kb.get_tools()
-        assert len(tools) == 1
-        assert tools[0]["name"] == "knowledge_base"
+        assert {t["name"] for t in tools} == {"workspace_read", "knowledge_base"}
 
 
 # ---- Cache ----

@@ -179,7 +179,8 @@ def test_select_below_threshold_returns_all() -> None:
     for i in range(5):
         agent.register_tool(_T(name=f"tool_{i}"))
     selected = agent.tool_registry.select_tools_for_query("anything", threshold=20)
-    assert len(selected) == 5
+    # 5 registered + the built-in `workspace_read` tool every Agent adds (D3).
+    assert len(selected) == agent.tool_registry.count() == 6
 
 
 def test_select_above_threshold_filters_by_relevance() -> None:

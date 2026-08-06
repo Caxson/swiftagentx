@@ -76,6 +76,19 @@ class SwiftAgentConfig(BaseModel):
     plan_auto_promote: bool = False
     plan_promote_after: int = 3
 
+    # Context offload (v0.5): tool results whose stringified form exceeds
+    # this many characters are written to the session workspace instead of
+    # being inlined into the ReAct / Scenario context sent to the LLM; the
+    # context keeps a preview + a workspace file reference that the
+    # `workspace_read` tool can pull back on demand. 0 disables offloading.
+    context_offload_threshold: int = 4000
+    context_offload_preview_chars: int = 500
+    # Per-call ceiling for `workspace_read`. Its output is exempt from
+    # offload (otherwise reading an offloaded result back would just offload
+    # it again), so this is what keeps a read-back bounded; the model pages
+    # through a larger file with the `offset` parameter.
+    context_offload_read_chunk_chars: int = 4000
+
     # Layered memory (v0.3)
     memory_l2_size: int = 4
     memory_l3_max_size: int = 6

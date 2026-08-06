@@ -20,9 +20,19 @@
   并行组的部分失败策略（`fail_fast` / `best_effort`），step `condition` 在 join 后统一求值；失败回退到 ReAct 的现有路径保持不变。
   验证：单测覆盖全部失败/条件分支组合。
 
-- [ ] **D3 · Tool 大结果 offload（context 卸载）**
+- [x] **D3 · Tool 大结果 offload（context 卸载）**（完成于 2026-08-06）
   超过阈值的 tool 输出写入 workspace 文件，context 中只保留引用 + 摘要；ReAct 和 Scenario hook 可按需回读。
   验证：单测 + 长输出场景 token 用量前后对比。
+  token 用量前后对比 benchmark 待本地补测（云端环境无法跑真实 LLM 调用）。
+  对抗式复审后补修（2026-08-06）：读回闭环（workspace_read 结果不再被二次卸载，
+  改为分块 + offset 分页）、planner 快路径同样过卸载、offload key 加随机后缀防跨轮
+  覆盖、workspace 写失败降级为截断内联而非请求失败。
+
+- [ ] **D3b · direct 大结果的 memory 回灌卸载**
+  `output_type="direct"` 的大结果作为 answer 进 L2 verbatim memory 后，会在之后每轮
+  被整段注回 prompt，跨轮维度绕过了 D3。需在 `add_turn` 入 L2 前对超阈值 answer 做同样
+  的 preview + 引用处理（答案本身仍原样返回用户）。
+  验证：单测（第二轮 prompt 不含第一轮完整大结果，但用户收到的答案完整）。
 
 - [ ] **D4 · 链执行状态持久化（checkpoint / 恢复）**
   长链每步执行状态落 storage，失败或人工审批中断后可从断点恢复；与现有 promotion 人工门衔接。
