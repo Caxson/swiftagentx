@@ -4,6 +4,12 @@ workspace — the read-back side of context offload (see
 ``core/context_offload.py``). Registered automatically on every ``Agent``
 so a ReAct thought or a Scenario tool-chain step can pull back a large
 tool result that was offloaded out of context.
+
+Reads are chunked (``max_chars``, with an ``offset``) and the tool is
+``offload_exempt``: an offloaded result is by definition larger than the
+offload threshold, so re-offloading what this tool returns would mean the
+model can never actually get its content back. Bounding the chunk here is
+what makes the exemption safe.
 """
 
 from __future__ import annotations
@@ -18,21 +24,30 @@ from .base import AgentContext, Tool, ToolOutput
 # does not depend on core/ elsewhere in this codebase.
 BackendProvider = Callable[[], Any]
 
+DEFAULT_READ_CHUNK_CHARS = 4000
+
 
 class WorkspaceReadTool(Tool):
-    """Reads a file previously written to the caller's session workspace."""
+    """Reads a chunk of a file previously written to the session workspace."""
 
-    def __init__(self, backend_provider: BackendProvider):
+    def __init__(
+        self,
+        backend_provider: BackendProvider,
+        max_chars: int = DEFAULT_READ_CHUNK_CHARS,
+    ):
         super().__init__(
             name="workspace_read",
             description=(
                 "Read back a file from your session workspace, e.g. a large "
-                "tool result that was offloaded out of context. Input: "
-                "{'path': 'tool_outputs/....txt'}."
+                f"tool result that was offloaded out of context. Returns at most "
+                f"{max_chars} characters per call; pass 'offset' to continue "
+                "reading. Input: {'path': 'tool_outputs/....txt', 'offset': 0}."
             ),
             category="workspace",
         )
         self._backend_provider = backend_provider
+        self._max_chars = max_chars
+        self.offload_exempt = True
 
     def validate_input(self, **kwargs: Any) -> bool:
         return bool(kwargs.get("path"))
@@ -50,6 +65,10 @@ class WorkspaceReadTool(Tool):
                         "type": "string",
                         "description": "Workspace-relative file path, e.g. tool_outputs/foo.txt",
                     },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Character offset to start reading from (default 0).",
+                    },
                 },
                 "required": ["path"],
             },
@@ -57,6 +76,11 @@ class WorkspaceReadTool(Tool):
 
     async def execute(self, context: AgentContext, **kwargs: Any) -> ToolOutput:
         path = kwargs.get("path", "")
+        try:
+            offset = max(0, int(kwargs.get("offset", 0) or 0))
+        except (TypeError, ValueError):
+            return ToolOutput(success=False, result=None, error="offset must be an integer")
+
         backend = self._backend_provider()
         ws = await backend.open(context.session_id)
         try:
@@ -68,4 +92,13 @@ class WorkspaceReadTool(Tool):
 
         if data is None:
             return ToolOutput(success=False, result=None, error=f"No such workspace file: {path}")
-        return ToolOutput(success=True, result=data.decode("utf-8", errors="replace"))
+
+        text = data.decode("utf-8", errors="replace")
+        chunk = text[offset:offset + self._max_chars]
+        remaining = len(text) - (offset + len(chunk))
+        if remaining > 0:
+            chunk += (
+                f"\n[{remaining} more characters. Continue with "
+                f'workspace_read(path="{path}", offset={offset + len(chunk)}).]'
+            )
+        return ToolOutput(success=True, result=chunk)

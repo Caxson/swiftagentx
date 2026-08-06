@@ -61,6 +61,10 @@ class Tool(ABC):
         self.output_type = output_type
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
+        # Opt out of context offload: a tool that already bounds its own
+        # output, or whose whole purpose is reading offloaded content back
+        # into context, must not have that output offloaded again.
+        self.offload_exempt = False
 
     @abstractmethod
     async def execute(self, context: AgentContext, **kwargs: Any) -> ToolOutput:

@@ -35,7 +35,7 @@ from ..tools.scenario import ScenarioConfig, ScenarioEngine
 from ..tools.termination import TerminationChecker
 from ..tools.workspace_tool import WorkspaceReadTool
 from .cache import CacheManager
-from .context_offload import offload_if_large
+from .context_offload import offload_if_large, offload_key, truncate_inline
 from .hooks import HookContext, HookEvent, HookRegistry, HookResult
 from .memory_hooks import TopicChangeHook
 from .memory_layers import (
@@ -179,7 +179,10 @@ class Agent:
         # this tool lets the model re-read them on demand. Resolves
         # `self.workspace_backend` lazily so a post-construction override
         # ("before first use") is honored.
-        self.tool_registry.register(WorkspaceReadTool(lambda: self.workspace_backend))
+        self.tool_registry.register(WorkspaceReadTool(
+            lambda: self.workspace_backend,
+            max_chars=self.config.context_offload_read_chunk_chars,
+        ))
 
     # --- Model access ---
 
@@ -353,26 +356,38 @@ class Agent:
             self.workspace_backend, session_id, cleanup_on_exit=cleanup_on_exit,
         )
 
-    async def _context_safe(self, value: Any, session_id: str, *, key: str) -> str:
+    async def _context_safe(self, value: Any, session_id: str, *, key_prefix: str) -> str:
         """Context offload (D3): return ``value`` unchanged when it's small,
         otherwise write it to the session workspace and return a preview +
-        reference. Shared by the ReAct loop and Scenario result formatting
-        so neither blows the prompt budget on one large tool result. Skips
-        opening the workspace entirely when offloading wouldn't trigger.
+        reference. Shared by the ReAct loop, the Planner fast path and
+        Scenario result formatting so none of them blows the prompt budget
+        on one large tool result. Skips opening the workspace entirely when
+        offloading wouldn't trigger.
+
+        Offloading is an optimization, so it never fails the request: if the
+        workspace can't be written the result degrades to a truncated inline
+        copy, which is still bounded.
         """
         threshold = self.config.context_offload_threshold
         text = value if isinstance(value, str) else str(value)
         if threshold <= 0 or len(text) <= threshold:
             return text
 
-        ws = await self.workspace_backend.open(session_id)
         try:
-            return await offload_if_large(
-                text, workspace=ws, key=key, threshold=threshold,
-                preview_chars=self.config.context_offload_preview_chars,
+            ws = await self.workspace_backend.open(session_id)
+            try:
+                return await offload_if_large(
+                    text, workspace=ws, key=offload_key(key_prefix),
+                    threshold=threshold,
+                    preview_chars=self.config.context_offload_preview_chars,
+                )
+            finally:
+                await ws.close()
+        except Exception as e:
+            logger.warning(
+                f"Context offload failed ({e}); truncating {len(text)} chars inline."
             )
-        finally:
-            await ws.close()
+            return truncate_inline(text, threshold)
 
     # ------------------------------------------------------------------
     # Skill registration
@@ -1169,10 +1184,17 @@ class Agent:
                 )
 
                 observation = str(result.result) if result.success else f"Error: {result.error}"
-                context_observation = await self._context_safe(
-                    observation, context.session_id,
-                    key=f"react_{tool_name}_{context.current_iteration}",
-                )
+                tool = self.tool_registry.get(tool_name)
+                if tool is not None and getattr(tool, "offload_exempt", False):
+                    # `workspace_read` and friends already bound their own
+                    # output; offloading it again would mean the model can
+                    # never read an offloaded result back.
+                    context_observation = observation
+                else:
+                    context_observation = await self._context_safe(
+                        observation, context.session_id,
+                        key_prefix=f"react_{tool_name}_{context.current_iteration}",
+                    )
                 accumulated_context += f"\nTool: {tool_name}\nResult: {context_observation}\n"
 
                 context.add_step(
@@ -1373,7 +1395,7 @@ class Agent:
                 model = self.get_model(ModelTier.HEAVY)
                 context_result = await self._context_safe(
                     result.result, context.session_id,
-                    key=f"scenario_{scenario_id}",
+                    key_prefix=f"scenario_{scenario_id}",
                 )
                 prompt = (
                     f"{self.prompt_manager.get_output_prompt()}\n\n"
@@ -1483,9 +1505,12 @@ class Agent:
         # return None or the ReAct fallback would run them a second time.
         try:
             model = self.get_model(ModelTier.HEAVY)
+            context_result = await self._context_safe(
+                result.result, context.session_id, key_prefix=f"plan_{intent}",
+            )
             prompt = (
                 f"{self.prompt_manager.get_output_prompt()}\n\n"
-                f"Tool results: {result.result}\n\n"
+                f"Tool results: {context_result}\n\n"
                 f"User question: {context.user_input}\n\n"
                 "Generate a natural, helpful response."
             )

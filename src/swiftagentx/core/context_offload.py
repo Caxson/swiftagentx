@@ -8,11 +8,12 @@ the full text to the caller's session workspace and returns a short preview
 plus a workspace file reference instead. The ``workspace_read`` tool
 (``tools/workspace_tool.py``) is the read-back path — it is a normal
 registered tool, so both the ReAct loop and a Scenario tool chain step can
-call it to pull the full content back on demand.
+call it to pull the full content back on demand, in bounded chunks.
 """
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from .workspace import Workspace
@@ -22,6 +23,27 @@ def stringify(value: Any) -> str:
     """Render a tool result the same way ReAct/Scenario already do for
     context — strings pass through, everything else gets ``str()``."""
     return value if isinstance(value, str) else str(value)
+
+
+def offload_key(prefix: str) -> str:
+    """Build a collision-free workspace key for one offloaded result.
+
+    Callers name the *kind* of result (``react_search_2``); the random
+    suffix is what keeps a second turn, a retry, or a concurrent request in
+    the same session from silently overwriting an earlier file whose
+    reference the model may still be holding.
+    """
+    return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+
+def truncate_inline(text: str, limit: int) -> str:
+    """Degrade gracefully when the workspace is unavailable: keep the head
+    of the text inline and say how much was dropped. Bounded context still
+    beats failing a request whose tool has already run."""
+    return (
+        f"{text[:limit]}\n[Truncated: {len(text) - limit} more characters "
+        "dropped — workspace unavailable, full result not stored.]"
+    )
 
 
 async def offload_if_large(

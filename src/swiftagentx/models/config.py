@@ -83,6 +83,11 @@ class SwiftAgentConfig(BaseModel):
     # `workspace_read` tool can pull back on demand. 0 disables offloading.
     context_offload_threshold: int = 4000
     context_offload_preview_chars: int = 500
+    # Per-call ceiling for `workspace_read`. Its output is exempt from
+    # offload (otherwise reading an offloaded result back would just offload
+    # it again), so this is what keeps a read-back bounded; the model pages
+    # through a larger file with the `offset` parameter.
+    context_offload_read_chunk_chars: int = 4000
 
     # Layered memory (v0.3)
     memory_l2_size: int = 4

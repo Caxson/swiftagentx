@@ -211,11 +211,13 @@ async def test_react_loop_offloads_large_observation_out_of_context() -> None:
     # the raw 5000-char payload, only a preview + workspace reference.
     final_prompt = recorder.prompts[-1]
     assert payload not in final_prompt
-    assert "tool_outputs/react_big_tool_1.txt" in final_prompt
+    assert "tool_outputs/react_big_tool_1_" in final_prompt
 
     # But the full content is still recoverable from the workspace.
     ws = await agent.workspace_backend.open("react-s1")
-    stored = await ws.read("tool_outputs/react_big_tool_1.txt")
+    stored_files = await ws.list()
+    assert len(stored_files) == 1
+    stored = await ws.read(stored_files[0])
     assert stored.decode("utf-8") == payload
     assert response.answer == "[recorded]"
 
@@ -283,10 +285,12 @@ async def test_scenario_llm_processed_offloads_large_result() -> None:
 
     final_prompt = recorder.prompts[-1]
     assert payload not in final_prompt
-    assert "tool_outputs/scenario_dump.txt" in final_prompt
+    assert "tool_outputs/scenario_dump_" in final_prompt
 
     ws = await agent.workspace_backend.open("scn-s1")
-    stored = await ws.read("tool_outputs/scenario_dump.txt")
+    stored_files = await ws.list()
+    assert len(stored_files) == 1
+    stored = await ws.read(stored_files[0])
     assert stored.decode("utf-8") == payload
 
 
@@ -315,3 +319,212 @@ async def test_scenario_direct_output_is_never_offloaded() -> None:
 
     response = await agent.run("dump it", session_id="scn-s2")
     assert response.answer == payload
+
+
+# ---------------------------------------------------------------------------
+# Read-back must terminate: `workspace_read` is exempt from offload and
+# returns a bounded chunk, so the model can actually get its content back
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_workspace_read_returns_bounded_chunk_with_next_offset() -> None:
+    backend = InMemoryWorkspaceBackend()
+    ws = await backend.open("s1")
+    await ws.write("tool_outputs/big.txt", "D" * 5000)
+    tool = WorkspaceReadTool(lambda: backend, max_chars=1000)
+
+    out = await tool.execute(_Ctx("s1"), path="tool_outputs/big.txt")
+
+    assert out.success
+    body, _, note = out.result.partition("\n[")
+    assert body == "D" * 1000
+    assert "offset=1000" in note  # tells the model how to continue
+
+
+@pytest.mark.asyncio
+async def test_workspace_read_offset_reads_the_tail() -> None:
+    backend = InMemoryWorkspaceBackend()
+    ws = await backend.open("s1")
+    await ws.write("tool_outputs/big.txt", "E" * 1500)
+    tool = WorkspaceReadTool(lambda: backend, max_chars=1000)
+
+    out = await tool.execute(_Ctx("s1"), path="tool_outputs/big.txt", offset=1000)
+
+    assert out.success
+    assert out.result == "E" * 500  # tail fits, no continuation note
+
+
+def test_workspace_read_tool_is_offload_exempt() -> None:
+    assert WorkspaceReadTool(lambda: None).offload_exempt is True
+
+
+class _ReadBackReactAgent(Agent):
+    """Offloads a big result, then does what the offload notice tells the
+    model to do: call `workspace_read` on the referenced path."""
+
+    async def _classify_intent(self, user_input: str, context: Any):  # type: ignore[override]
+        from swiftagentx.core.router import IntentLevel, IntentResult
+        return IntentResult(level=IntentLevel.REACT, confidence=1.0)
+
+    async def _generate_thought(self, context: Any, model: Any, accumulated: str) -> str:  # type: ignore[override]
+        if not accumulated:
+            return 'Thought: fetch it.\nAction: big_tool\nAction Input: {}'
+        if "workspace_read(path=" in accumulated and "Tool: workspace_read" not in accumulated:
+            path = accumulated.split('workspace_read(path="')[1].split('"')[0]
+            return (f'Thought: read it back.\nAction: workspace_read\n'
+                    f'Action Input: {{"path": "{path}"}}')
+        return "Thought: done."
+
+
+@pytest.mark.asyncio
+async def test_react_read_back_is_not_offloaded_again() -> None:
+    """The read-back path must terminate: `workspace_read`'s own output is
+    exempt from offload, so its (bounded) chunk lands in context instead of
+    being written out to yet another file."""
+    payload = "F" * 5000
+    recorder = _RecordingModelClient(api_key="k", model="d")
+    agent = _ReadBackReactAgent(
+        model=recorder,
+        config=SwiftAgentConfig(
+            memory_enable_topic_change_hook=False, enable_cache=False,
+            max_iterations=3,
+            context_offload_threshold=200, context_offload_preview_chars=30,
+            context_offload_read_chunk_chars=400,
+        ),
+    )
+    agent.workspace_backend = InMemoryWorkspaceBackend()
+    agent.tool_registry.register(_BigResultTool(payload))  # type: ignore[arg-type]
+
+    await agent.run("go", session_id="react-readback")
+
+    ws = await agent.workspace_backend.open("react-readback")
+    files = await ws.list()
+    assert len(files) == 1, f"read-back must not spawn another offload file: {files}"
+
+    final_prompt = recorder.prompts[-1]
+    assert "Tool: workspace_read" in final_prompt
+    assert "F" * 400 in final_prompt  # the bounded chunk actually arrived
+
+
+# ---------------------------------------------------------------------------
+# Offload keys are unique per call — no silent cross-turn overwrite
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_repeated_turns_do_not_overwrite_each_others_offload_files() -> None:
+    recorder = _RecordingModelClient(api_key="k", model="d")
+    agent = _OneShotReactAgent(
+        model=recorder,
+        config=SwiftAgentConfig(
+            memory_enable_topic_change_hook=False, enable_cache=False,
+            max_iterations=2,
+            context_offload_threshold=200, context_offload_preview_chars=30,
+        ),
+    )
+    agent.workspace_backend = InMemoryWorkspaceBackend()
+    tool = _BigResultTool("G" * 5000)
+    agent.tool_registry.register(tool)  # type: ignore[arg-type]
+
+    await agent.run("first", session_id="react-multi")
+    first_files = set(await (await agent.workspace_backend.open("react-multi")).list())
+
+    tool._payload = "H" * 5000  # same tool, different result on turn 2
+    await agent.run("second", session_id="react-multi")
+    all_files = set(await (await agent.workspace_backend.open("react-multi")).list())
+
+    assert len(all_files) == 2, "turn 2 silently overwrote turn 1's offload file"
+    ws = await agent.workspace_backend.open("react-multi")
+    kept = await ws.read(first_files.pop())
+    assert kept.decode("utf-8") == "G" * 5000  # turn 1 content intact
+
+
+# ---------------------------------------------------------------------------
+# Planner fast path must offload too
+# ---------------------------------------------------------------------------
+
+
+class _PlanForceAgent(Agent):
+    """Routes to REACT but resolves a cached plan, so `_execute_plan_steps`
+    (the planner fast path) builds the LLM-facing prompt."""
+
+    async def _classify_intent(self, user_input: str, context: Any):  # type: ignore[override]
+        from swiftagentx.core.router import IntentLevel, IntentResult
+        return IntentResult(level=IntentLevel.REACT, confidence=1.0)
+
+
+@pytest.mark.asyncio
+async def test_planner_fast_path_offloads_large_result() -> None:
+    payload = "I" * 5000
+    recorder = _RecordingModelClient(api_key="k", model="d")
+    agent = _PlanForceAgent(
+        model=recorder,
+        config=SwiftAgentConfig(
+            memory_enable_topic_change_hook=False, enable_cache=False,
+            context_offload_threshold=200, context_offload_preview_chars=30,
+        ),
+    )
+    agent.workspace_backend = InMemoryWorkspaceBackend()
+    agent.tool_registry.register(_BigResultTool(payload))  # type: ignore[arg-type]
+
+    from swiftagentx.models.schema import SessionContext
+    context = SessionContext(session_id="plan-s1", user_id="u", user_input="go")
+    answer = await agent._execute_plan_steps(
+        [ToolChainStep(tool="big_tool")], {}, context, "big",
+    )
+
+    assert answer == "[recorded]"
+    plan_prompt = recorder.prompts[-1]
+    assert payload not in plan_prompt, "planner path bypassed context offload"
+    assert "tool_outputs/plan_big_" in plan_prompt
+
+
+# ---------------------------------------------------------------------------
+# Offload failure must degrade, never fail the request
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_workspace_write_failure_degrades_to_truncated_inline() -> None:
+    """A full disk must not turn a successful tool call into a failed
+    request — the tool already ran, side effects included."""
+
+    class _BrokenBackend(InMemoryWorkspaceBackend):
+        async def open(self, session_id: str) -> Any:
+            ws = await super().open(session_id)
+
+            async def _boom(*a: Any, **kw: Any) -> None:
+                raise OSError(28, "No space left on device")
+
+            ws.write = _boom  # type: ignore[method-assign]
+            return ws
+
+    payload = "J" * 5000
+    recorder = _RecordingModelClient(api_key="k", model="d")
+    agent = _OneShotReactAgent(
+        model=recorder,
+        config=SwiftAgentConfig(
+            memory_enable_topic_change_hook=False, enable_cache=False,
+            max_iterations=2,
+            context_offload_threshold=200, context_offload_preview_chars=30,
+        ),
+    )
+    agent.workspace_backend = _BrokenBackend()
+    agent.tool_registry.register(_BigResultTool(payload))  # type: ignore[arg-type]
+
+    response = await agent.run("go", session_id="react-broken")
+
+    assert response.answer == "[recorded]"  # request survived
+    final_prompt = recorder.prompts[-1]
+    assert payload not in final_prompt  # still bounded
+    assert "J" * 200 in final_prompt  # degraded to a truncated inline copy
+
+
+class _Ctx:
+    """Minimal AgentContext for direct tool execution."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        self.user_input = ""
+        self.variables: dict[str, Any] = {}
