@@ -20,9 +20,10 @@
   并行组的部分失败策略（`fail_fast` / `best_effort`），step `condition` 在 join 后统一求值；失败回退到 ReAct 的现有路径保持不变。
   验证：单测覆盖全部失败/条件分支组合。
 
-- [ ] **D3 · Tool 大结果 offload（context 卸载）**
+- [x] **D3 · Tool 大结果 offload（context 卸载）**（完成于 2026-08-06）
   超过阈值的 tool 输出写入 workspace 文件，context 中只保留引用 + 摘要；ReAct 和 Scenario hook 可按需回读。
   验证：单测 + 长输出场景 token 用量前后对比。
+  token 用量前后对比 benchmark 待本地补测（云端环境无法跑真实 LLM 调用）。
 
 - [ ] **D4 · 链执行状态持久化（checkpoint / 恢复）**
   长链每步执行状态落 storage，失败或人工审批中断后可从断点恢复；与现有 promotion 人工门衔接。

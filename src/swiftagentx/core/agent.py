@@ -33,7 +33,9 @@ from ..tools.executor import ToolExecutor
 from ..tools.registry import ToolRegistry
 from ..tools.scenario import ScenarioConfig, ScenarioEngine
 from ..tools.termination import TerminationChecker
+from ..tools.workspace_tool import WorkspaceReadTool
 from .cache import CacheManager
+from .context_offload import offload_if_large
 from .hooks import HookContext, HookEvent, HookRegistry, HookResult
 from .memory_hooks import TopicChangeHook
 from .memory_layers import (
@@ -170,6 +172,14 @@ class Agent:
         # Workspace backend — defaults to local-disk under the system temp
         # dir. Override via agent.workspace_backend = ... before first use.
         self.workspace_backend: WorkspaceBackend = LocalDiskWorkspaceBackend()
+
+        # Read-back side of context offload (D3): large tool results get
+        # written to the session workspace instead of inlined into the
+        # LLM-facing context (see _execute_react_loop / _execute_scenario);
+        # this tool lets the model re-read them on demand. Resolves
+        # `self.workspace_backend` lazily so a post-construction override
+        # ("before first use") is honored.
+        self.tool_registry.register(WorkspaceReadTool(lambda: self.workspace_backend))
 
     # --- Model access ---
 
@@ -342,6 +352,27 @@ class Agent:
         return use_workspace(
             self.workspace_backend, session_id, cleanup_on_exit=cleanup_on_exit,
         )
+
+    async def _context_safe(self, value: Any, session_id: str, *, key: str) -> str:
+        """Context offload (D3): return ``value`` unchanged when it's small,
+        otherwise write it to the session workspace and return a preview +
+        reference. Shared by the ReAct loop and Scenario result formatting
+        so neither blows the prompt budget on one large tool result. Skips
+        opening the workspace entirely when offloading wouldn't trigger.
+        """
+        threshold = self.config.context_offload_threshold
+        text = value if isinstance(value, str) else str(value)
+        if threshold <= 0 or len(text) <= threshold:
+            return text
+
+        ws = await self.workspace_backend.open(session_id)
+        try:
+            return await offload_if_large(
+                text, workspace=ws, key=key, threshold=threshold,
+                preview_chars=self.config.context_offload_preview_chars,
+            )
+        finally:
+            await ws.close()
 
     # ------------------------------------------------------------------
     # Skill registration
@@ -1138,7 +1169,11 @@ class Agent:
                 )
 
                 observation = str(result.result) if result.success else f"Error: {result.error}"
-                accumulated_context += f"\nTool: {tool_name}\nResult: {observation}\n"
+                context_observation = await self._context_safe(
+                    observation, context.session_id,
+                    key=f"react_{tool_name}_{context.current_iteration}",
+                )
+                accumulated_context += f"\nTool: {tool_name}\nResult: {context_observation}\n"
 
                 context.add_step(
                     "ACTION",
@@ -1332,11 +1367,17 @@ class Agent:
             if result.output_type == ToolOutputType.DIRECT_OUTPUT:
                 answer = str(result.result)
             else:
-                # Use heavy model to format the result
+                # Use heavy model to format the result. Large results are
+                # offloaded to the workspace first (D3) so one oversized
+                # step doesn't blow the formatting prompt's budget.
                 model = self.get_model(ModelTier.HEAVY)
+                context_result = await self._context_safe(
+                    result.result, context.session_id,
+                    key=f"scenario_{scenario_id}",
+                )
                 prompt = (
                     f"{self.prompt_manager.get_output_prompt()}\n\n"
-                    f"Tool results: {result.result}\n\n"
+                    f"Tool results: {context_result}\n\n"
                     f"User question: {context.user_input}\n\n"
                     "Generate a natural, helpful response."
                 )

@@ -12,6 +12,7 @@ Features:
 from .admin.service import AdminService
 from .core.agent import Agent
 from .core.cache import CacheManager
+from .core.context_offload import offload_if_large
 from .core.hooks import (
     Hook,
     HookContext,
@@ -77,6 +78,7 @@ from .tools.base import AgentContext, Tool, ToolOutput, ToolOutputType
 from .tools.executor import ToolExecutor
 from .tools.registry import ToolRegistry
 from .tools.scenario import ScenarioConfig, ScenarioEngine, ToolChainStep
+from .tools.workspace_tool import WorkspaceReadTool
 
 __version__ = "0.4.1"
 
@@ -104,6 +106,8 @@ __all__ = [
     "Workspace", "WorkspaceBackend",
     "InMemoryWorkspaceBackend", "LocalDiskWorkspaceBackend",
     "use_workspace",
+    # D3 context offload
+    "offload_if_large", "WorkspaceReadTool",
     # v0.3 prompt layout
     "PromptLayout",
     "CacheManager",
