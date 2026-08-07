@@ -28,11 +28,14 @@
   改为分块 + offset 分页）、planner 快路径同样过卸载、offload key 加随机后缀防跨轮
   覆盖、workspace 写失败降级为截断内联而非请求失败。
 
-- [ ] **D3b · direct 大结果的 memory 回灌卸载**
+- [x] **D3b · direct 大结果的 memory 回灌卸载**（完成于 2026-08-07）
   `output_type="direct"` 的大结果作为 answer 进 L2 verbatim memory 后，会在之后每轮
   被整段注回 prompt，跨轮维度绕过了 D3。需在 `add_turn` 入 L2 前对超阈值 answer 做同样
   的 preview + 引用处理（答案本身仍原样返回用户）。
   验证：单测（第二轮 prompt 不含第一轮完整大结果，但用户收到的答案完整）。
+  实现：复用 D3 的 `Agent._context_safe`（`key_prefix="memory_turn"`），在 `run()` /
+  `run_stream()` 全部 6 个 `add_turn` 调用点前对写入 L2 的副本做 offload，返回给用户的
+  `answer` 变量保持不变。
 
 - [ ] **D4 · 链执行状态持久化（checkpoint / 恢复）**
   长链每步执行状态落 storage，失败或人工审批中断后可从断点恢复；与现有 promotion 人工门衔接。

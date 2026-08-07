@@ -696,7 +696,10 @@ class Agent:
                 stage_result = await self.pipeline.execute(pipeline_ctx)
                 if stage_result.action == StageAction.SHORT_CIRCUIT and stage_result.answer is not None:
                     answer = stage_result.answer
-                    await mem.add_turn(user_input, answer)
+                    stored_answer = await self._context_safe(
+                        answer, session_id, key_prefix="memory_turn",
+                    )
+                    await mem.add_turn(user_input, stored_answer)
                     return AgentResponse(
                         session_id=session_id,
                         request_id=request_id,
@@ -727,7 +730,10 @@ class Agent:
                 )
                 if hit:
                     answer = str(cached_value)
-                    await mem.add_turn(user_input, answer)
+                    stored_answer = await self._context_safe(
+                        answer, session_id, key_prefix="memory_turn",
+                    )
+                    await mem.add_turn(user_input, stored_answer)
                     return AgentResponse(
                         session_id=session_id,
                         request_id=request_id,
@@ -748,7 +754,10 @@ class Agent:
             )
             if hook_result.action == "short_circuit" and hook_result.answer is not None:
                 answer = hook_result.answer
-                await mem.add_turn(user_input, answer)
+                stored_answer = await self._context_safe(
+                    answer, session_id, key_prefix="memory_turn",
+                )
+                await mem.add_turn(user_input, stored_answer)
                 return AgentResponse(
                     session_id=session_id, request_id=request_id, answer=answer,
                     total_iterations=0,
@@ -789,7 +798,14 @@ class Agent:
             )
 
             # Record the completed turn (folds into L2; may fire summarize).
-            await mem.add_turn(user_input, answer)
+            # A direct-output answer is returned to the user verbatim (`answer`
+            # below is untouched), but the copy that lands in L2 gets the same
+            # offload treatment as D3's per-call tool results (D3b) — otherwise
+            # it gets replayed whole into every later prompt via to_chat_messages.
+            stored_answer = await self._context_safe(
+                answer, session_id, key_prefix="memory_turn",
+            )
+            await mem.add_turn(user_input, stored_answer)
 
             # Populate the L2 cache with this answer so the next identical
             # (user_input, user_id, platform) request inside the TTL window
@@ -922,7 +938,10 @@ class Agent:
                     answer = str(cached_value)
                     await self._stream_answer(answer, adapter, request.session_id, request_id)
                     await adapter.finish()
-                    await mem.add_turn(request.user_input, answer)
+                    stored_answer = await self._context_safe(
+                        answer, request.session_id, key_prefix="memory_turn",
+                    )
+                    await mem.add_turn(request.user_input, stored_answer)
                     return AgentResponse(
                         session_id=request.session_id, request_id=request_id,
                         answer=answer, total_iterations=0,
@@ -984,7 +1003,10 @@ class Agent:
             await adapter.send_event(SSEEventBuilder.completed())
             await adapter.finish()
 
-            await mem.add_turn(request.user_input, answer)
+            stored_answer = await self._context_safe(
+                answer, request.session_id, key_prefix="memory_turn",
+            )
+            await mem.add_turn(request.user_input, stored_answer)
             if self.config.enable_cache:
                 self.cache.set_level_2(
                     request.user_input, request.user_id, answer,
