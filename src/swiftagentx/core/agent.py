@@ -31,7 +31,7 @@ from ..stream.builder import SSEEventBuilder
 from ..tools.base import Tool, ToolOutput, ToolOutputType
 from ..tools.executor import ToolExecutor
 from ..tools.registry import ToolRegistry
-from ..tools.scenario import ScenarioConfig, ScenarioEngine
+from ..tools.scenario import ScenarioCheckpoint, ScenarioConfig, ScenarioEngine
 from ..tools.termination import TerminationChecker
 from ..tools.workspace_tool import WorkspaceReadTool
 from .cache import CacheManager
@@ -1401,10 +1401,20 @@ class Agent:
                 tool_result=output,
             )
 
+        # D4: checkpoint progress after every step-group so a chain
+        # interrupted mid-run (process crash, or a step failure the caller
+        # retries after fixing) resumes instead of re-running finished
+        # steps. Keyed by (session, scenario) — deterministic, not
+        # suffixed like D3's offload keys, since resume must find the same
+        # file a later invocation of the same scenario/session writes.
+        ws = await self.workspace_backend.open(context.session_id)
+        checkpoint = ScenarioCheckpoint(ws, f"scenario_{scenario_id}")
+
         result = await self.scenario_engine.execute(
             scenario_id, context, self.tool_executor,
             extra_vars=extra_vars,
             step_callback=_on_step,
+            checkpoint=checkpoint,
         )
 
         if result.success:

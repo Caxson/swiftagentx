@@ -5,6 +5,7 @@ Scenarios skip the full ReAct loop, saving 2-3 LLM calls for common request patt
 """
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from string import Template
@@ -12,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ..core.workspace import Workspace
 from .base import AgentContext, ToolOutput, ToolOutputType
 from .executor import ToolExecutor
 
@@ -95,6 +97,46 @@ class ScenarioConfig(BaseModel):
         return names - reserved - produced
 
 
+class ScenarioCheckpoint:
+    """Persists a scenario chain's progress after every completed step-group
+    so a chain interrupted mid-run (process crash, or paused for a human
+    approval step upstream of `Agent.promote_plan`) can resume without
+    re-running steps that already succeeded.
+
+    Deliberately minimal (docs/OPTIMIZATION_PLAN.md D4): one JSON blob per
+    ``(session, key)``, written through the same ``Workspace`` abstraction
+    D3 already uses for context offload — no new storage backend, no graph/
+    state-machine class. Unlike D3's offload keys, the checkpoint path is
+    *not* suffixed with a random id: it must be the same path every time so
+    a fresh process can find and resume it.
+    """
+
+    def __init__(self, workspace: Workspace, key: str) -> None:
+        self._workspace = workspace
+        self._relative = f"checkpoints/{key}.json"
+
+    async def load(self) -> dict[str, Any] | None:
+        """Return the last saved ``{group_index, collected, failed_steps}``,
+        or ``None`` if this chain has never been checkpointed (or already
+        ran to completion and was cleared)."""
+        raw = await self._workspace.read(self._relative)
+        if raw is None:
+            return None
+        return json.loads(raw.decode("utf-8"))
+
+    async def save(
+        self, *, group_index: int, collected: dict[str, Any], failed_steps: list[str],
+    ) -> None:
+        payload = {"group_index": group_index, "collected": collected, "failed_steps": failed_steps}
+        await self._workspace.write(self._relative, json.dumps(payload))
+
+    async def clear(self) -> None:
+        """Drop the checkpoint once the chain has run to completion — a
+        later invocation of the same scenario/session must start fresh,
+        not resume a finished run."""
+        await self._workspace.remove(self._relative)
+
+
 class ScenarioEngine:
     """
     Scenario toolchain execution engine.
@@ -173,6 +215,7 @@ class ScenarioEngine:
         tool_executor: ToolExecutor,
         extra_vars: dict[str, Any] | None = None,
         step_callback: Callable[..., Any] | None = None,
+        checkpoint: ScenarioCheckpoint | None = None,
     ) -> ToolOutput:
         """
         Execute a scenario's tool chain.
@@ -189,6 +232,9 @@ class ScenarioEngine:
                 ``None`` for the "before" call and the step's result for
                 "after". Used by ``Agent._execute_scenario`` to dispatch
                 ``HookEvent.BEFORE_SCENARIO_STEP`` / ``AFTER_SCENARIO_STEP``.
+            checkpoint: Optional D4 checkpoint. When given, progress is
+                persisted after every step-group and a prior unfinished run
+                is resumed instead of restarted from scratch.
 
         Returns:
             Combined ToolOutput from the chain
@@ -198,7 +244,7 @@ class ScenarioEngine:
             return ToolOutput(success=False, result=None, error=f"Scenario '{scenario_id}' not found")
         return await self.execute_config(
             scenario, scenario_id, context, tool_executor,
-            extra_vars=extra_vars, step_callback=step_callback,
+            extra_vars=extra_vars, step_callback=step_callback, checkpoint=checkpoint,
         )
 
     async def execute_config(
@@ -209,6 +255,7 @@ class ScenarioEngine:
         tool_executor: ToolExecutor,
         extra_vars: dict[str, Any] | None = None,
         step_callback: Callable[..., Any] | None = None,
+        checkpoint: ScenarioCheckpoint | None = None,
     ) -> ToolOutput:
         """Execute a ScenarioConfig that need not be registered.
 
@@ -227,8 +274,25 @@ class ScenarioEngine:
         collected: dict[str, Any] = extra_vars or {}
         last_output: ToolOutput | None = None
         failed_steps: list[str] = []
+        start_index = 0
 
-        for entry in scenario.tool_chain:
+        # D4: resume from a prior interrupted run. A saved checkpoint's
+        # `collected` wins over `extra_vars` on key clashes — it reflects
+        # everything the chain had already produced (including possibly a
+        # newer value for a var also present in extra_vars) up to the point
+        # it stopped.
+        if checkpoint is not None:
+            saved = await checkpoint.load()
+            if saved is not None:
+                start_index = saved["group_index"]
+                collected = {**collected, **saved["collected"]}
+                failed_steps = list(saved["failed_steps"])
+
+        chain_completed = False
+        for index, entry in enumerate(scenario.tool_chain):
+            if index < start_index:
+                continue
+
             # A plain step is just a parallel "group" of one — same code
             # path either way, no dependencies to reason about within a
             # group by construction. Conditions are evaluated here, against
@@ -237,6 +301,10 @@ class ScenarioEngine:
             group = [s for s in (entry if isinstance(entry, list) else [entry])
                      if self._eval_condition(s.condition, collected)]
             if not group:
+                if checkpoint is not None:
+                    await checkpoint.save(
+                        group_index=index + 1, collected=collected, failed_steps=failed_steps,
+                    )
                 continue
 
             # Build every step's tool input from one snapshot of `collected`
@@ -275,8 +343,24 @@ class ScenarioEngine:
                     group_failed = True
                     failed_steps.append(step.tool)
 
+            # Retry the same (failed) group on the next resume; a
+            # successful or best-effort group advances past it.
+            if checkpoint is not None:
+                await checkpoint.save(
+                    group_index=index if group_failed else index + 1,
+                    collected=collected, failed_steps=failed_steps,
+                )
+
             if group_failed and scenario.on_group_failure != "best_effort":
                 break
+        else:
+            chain_completed = True
+
+        # The chain ran to completion (possibly with best-effort failures
+        # along the way, but nothing left to resume) — a checkpoint from
+        # this or an earlier interrupted run no longer applies.
+        if checkpoint is not None and chain_completed:
+            await checkpoint.clear()
 
         if last_output is None:
             return ToolOutput(success=True, result=collected, output_type=ToolOutputType.LLM_PROCESSED)

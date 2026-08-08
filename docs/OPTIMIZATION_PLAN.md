@@ -37,9 +37,15 @@
   `run_stream()` 全部 6 个 `add_turn` 调用点前对写入 L2 的副本做 offload，返回给用户的
   `answer` 变量保持不变。
 
-- [ ] **D4 · 链执行状态持久化（checkpoint / 恢复）**
+- [x] **D4 · 链执行状态持久化（checkpoint / 恢复）**（完成于 2026-08-08）
   长链每步执行状态落 storage，失败或人工审批中断后可从断点恢复；与现有 promotion 人工门衔接。
   验证：中断-恢复单测（模拟进程退出后 resume）。
+  实现：`ScenarioCheckpoint`（`tools/scenario.py`）复用 D3 的 `Workspace` 存储原语，
+  在 `ScenarioEngine.execute_config` 每个 step-group join 后落盘
+  `{group_index, collected, failed_steps}`；resume 时跳过已完成分组、仅重试失败分组，
+  链跑完（含 best_effort 容错完成）后清空 checkpoint。`Agent._execute_scenario`
+  按 `(session_id, scenario_id)` 自动接入，`LocalDiskWorkspaceBackend` 默认落盘到
+  本地磁盘，天然可跨进程重启恢复；未传 checkpoint 时行为与之前完全一致。
 
 - [ ] **D5 · 挖矿 loop 一期：transcript 采集与模式聚类**
   后台任务扫描历史请求记录，聚类重复出现的 ReAct 工具序列，产出 Scenario 候选（进入现有候选池）。

@@ -77,7 +77,7 @@ from .stream.builder import SSEEventBuilder
 from .tools.base import AgentContext, Tool, ToolOutput, ToolOutputType
 from .tools.executor import ToolExecutor
 from .tools.registry import ToolRegistry
-from .tools.scenario import ScenarioConfig, ScenarioEngine, ToolChainStep
+from .tools.scenario import ScenarioCheckpoint, ScenarioConfig, ScenarioEngine, ToolChainStep
 from .tools.workspace_tool import WorkspaceReadTool
 
 __version__ = "0.4.1"
@@ -118,7 +118,7 @@ __all__ = [
     # Tools
     "Tool", "ToolOutput", "ToolOutputType", "AgentContext",
     "ToolRegistry", "ToolExecutor",
-    "ScenarioConfig", "ToolChainStep", "ScenarioEngine",
+    "ScenarioConfig", "ToolChainStep", "ScenarioEngine", "ScenarioCheckpoint",
     # Stream
     "SSEStreamAdapter", "SSEEventBuilder",
     # Models
