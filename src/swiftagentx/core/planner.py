@@ -132,7 +132,7 @@ class Planner:
                 if str(v).strip()
             }
             return GeneratedPlan(
-                intent=_sanitize_intent(str(data["intent"])),
+                intent=sanitize_intent(str(data["intent"])),
                 description=str(data.get("description") or ""),
                 steps=steps,
                 slots=slots,
@@ -343,9 +343,9 @@ class PlanStore:
         )
 
     def _find_same_shape(self, plan: GeneratedPlan) -> CachedPlan | None:
-        shape = _plan_shape(plan.steps)
+        shape = plan_shape(plan.steps)
         for cached in self._plans.values():
-            if _plan_shape(cached.steps) == shape:
+            if plan_shape(cached.steps) == shape:
                 return cached
         return None
 
@@ -369,7 +369,7 @@ class PlanStore:
 
     @staticmethod
     def _make_id(plan: GeneratedPlan) -> str:
-        digest = hashlib.sha1(_plan_shape(plan.steps).encode()).hexdigest()[:8]
+        digest = hashlib.sha1(plan_shape(plan.steps).encode()).hexdigest()[:8]
         return f"plan_{plan.intent}_{digest}"
 
 
@@ -386,15 +386,20 @@ def _strip_slot_values(text: str, slots: dict[str, str]) -> str:
     return text
 
 
-def _plan_shape(steps: list[ToolChainStep]) -> str:
-    """Canonical signature of a tool chain: tools + param names, not values."""
+def plan_shape(steps: list[ToolChainStep]) -> str:
+    """Canonical signature of a tool chain: tools + param names, not values.
+
+    Shared with ``core/miner.py`` (D5): transcript clustering keys on the
+    exact same shape ``PlanStore`` dedupes candidates on, so a mined
+    candidate and an LLM-planned one for the same chain land on one entry.
+    """
     return "|".join(
         f"{s.tool}({','.join(sorted(s.kwargs_template))})>{s.extract_to}"
         for s in steps
     )
 
 
-def _sanitize_intent(intent: str) -> str:
+def sanitize_intent(intent: str) -> str:
     candidate = re.sub(r"[^a-z0-9_]", "_", intent.strip().lower()).strip("_")[:40]
     return candidate if _INTENT_RE.match(candidate) else "plan"
 

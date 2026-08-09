@@ -76,6 +76,18 @@ class SwiftAgentConfig(BaseModel):
     plan_auto_promote: bool = False
     plan_promote_after: int = 3
 
+    # Transcript mining (D5, opt-in). When on, every successful ReAct run
+    # with a 2+ tool chain is logged in-memory; Agent.mine_scenario_candidates()
+    # (called by an operator-driven background task — this framework has no
+    # built-in scheduler) clusters the log by tool-chain shape and feeds
+    # clusters that recur at least `mining_min_cluster_size` times into the
+    # same plan_store candidate pool the Planner fast path uses. Mined
+    # candidates land unapproved/unpromoted — same manual review gates as
+    # any other plan candidate.
+    enable_transcript_mining: bool = False
+    mining_min_cluster_size: int = 3
+    mining_max_transcripts: int = 500
+
     # Context offload (v0.5): tool results whose stringified form exceeds
     # this many characters are written to the session workspace instead of
     # being inlined into the ReAct / Scenario context sent to the LLM; the

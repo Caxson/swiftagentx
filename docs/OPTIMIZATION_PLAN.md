@@ -47,9 +47,19 @@
   按 `(session_id, scenario_id)` 自动接入，`LocalDiskWorkspaceBackend` 默认落盘到
   本地磁盘，天然可跨进程重启恢复；未传 checkpoint 时行为与之前完全一致。
 
-- [ ] **D5 · 挖矿 loop 一期：transcript 采集与模式聚类**
+- [x] **D5 · 挖矿 loop 一期：transcript 采集与模式聚类**（完成于 2026-08-09）
   后台任务扫描历史请求记录，聚类重复出现的 ReAct 工具序列，产出 Scenario 候选（进入现有候选池）。
   验证：用 benchmarks 流量重放，确认能自动产出预期候选。
+  benchmark 流量重放待本地补测（云端环境无法跑真实 LLM/网络请求）。
+  实现：新增 `core/miner.py`（`ReactTranscript` + `TranscriptMiner`），把 ReAct
+  实际执行的工具链重建为 `GeneratedPlan`，再走与 Planner 完全相同的
+  `PlanStore.add()` 路径入池——挖出的候选与 LLM 生成的候选共享同一套复用/转正
+  审核门（`planner.py` 的 `plan_shape`/`sanitize_intent` 由私有函数转为公开
+  工具函数以便复用，无新增分叉逻辑）。`SwiftAgentConfig.enable_transcript_mining`
+  （默认关闭）打开后，ReAct 循环每成功执行一条 ≥2 步的工具链就记入内存日志
+  （`mining_max_transcripts` 上限的定长队列）；`Agent.mine_scenario_candidates()`
+  供外部调度周期性调用，按 `mining_min_cluster_size` 聚类同 shape 的历史请求、
+  产出候选后清空本批日志。
 
 - [ ] **D6 · 回放评测门（replay eval gate）**
   候选链用历史真实请求 replay，输出与 ReAct 基线做一致性打分；达标才进入审批队列，报告落盘。

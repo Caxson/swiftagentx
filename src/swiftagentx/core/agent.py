@@ -38,6 +38,7 @@ from .cache import CacheManager
 from .context_offload import offload_if_large, offload_key, truncate_inline
 from .hooks import HookContext, HookEvent, HookRegistry, HookResult
 from .memory_hooks import TopicChangeHook
+from .miner import ReactTranscript, TranscriptMiner
 from .memory_layers import (
     InMemoryBackend,
     LayeredMemoryConfig,
@@ -135,6 +136,11 @@ class Agent:
             promote_after=self.config.plan_promote_after,
             auto_reuse=self.config.plan_auto_reuse,
         )
+        self.transcript_miner = TranscriptMiner(
+            min_cluster_size=self.config.mining_min_cluster_size,
+            max_steps=self.planner.max_steps,
+        )
+        self._react_transcripts: list[ReactTranscript] = []
         self.pipeline = RequestPipeline()
         self.termination_checker = TerminationChecker()
         self.hooks = HookRegistry()
@@ -1108,6 +1114,7 @@ class Agent:
         model = self.get_model(ModelTier.HEAVY)
         accumulated_context = ""
         answer = ""
+        executed_actions: list[tuple[str, dict[str, Any]]] = []
 
         # Per-loop helper for dispatching iteration-scoped hooks.
         async def _dispatch_iter(event: HookEvent, **extra: Any) -> None:
@@ -1198,6 +1205,8 @@ class Agent:
                     react_iteration=iteration + 1,
                 )
                 result = await self.tool_executor.execute(tool_name, context, **tool_params)
+                if result.success:
+                    executed_actions.append((tool_name, dict(tool_params)))
                 await self.on_after_tool_call(context, tool_name, result)
                 await _dispatch_iter(
                     HookEvent.AFTER_TOOL_CALL,
@@ -1234,18 +1243,22 @@ class Agent:
 
                 # Check if the tool returned a direct output
                 if result.success and result.output_type == ToolOutputType.DIRECT_OUTPUT:
+                    self._record_react_transcript(context, executed_actions)
                     return observation
             else:
                 # No action — extract answer from thought
                 answer = self._extract_final_answer(thought)
                 if answer:
                     await _dispatch_iter(HookEvent.AFTER_REACT_ITER, react_iteration=iteration + 1)
+                    self._record_react_transcript(context, executed_actions)
                     return answer
 
             await _dispatch_iter(HookEvent.AFTER_REACT_ITER, react_iteration=iteration + 1)
 
         # Generate final answer from accumulated context
-        return await self._generate_final_answer(context, model, accumulated_context)
+        final_answer = await self._generate_final_answer(context, model, accumulated_context)
+        self._record_react_transcript(context, executed_actions)
+        return final_answer
 
     async def _generate_thought(
         self, context: SessionContext, model: ModelClient, accumulated_context: str
@@ -1630,6 +1643,41 @@ class Agent:
         """Render a cached plan as a ScenarioConfig draft the developer can
         codify (the durable, human-confirmed promotion track)."""
         return self.plan_store.to_scenario_config(plan_id)
+
+    def _record_react_transcript(
+        self, context: SessionContext, actions: list[tuple[str, dict[str, Any]]],
+    ) -> None:
+        """Log a completed ReAct run's tool chain for D5 transcript mining.
+
+        No-op unless ``enable_transcript_mining`` is on, or the run didn't
+        chain at least 2 successful tool calls (nothing to mine). Bounded
+        FIFO log; ``mine_scenario_candidates()`` drains it.
+        """
+        if not self.config.enable_transcript_mining or len(actions) < 2:
+            return
+        self._react_transcripts.append(
+            ReactTranscript(user_input=context.user_input, actions=list(actions))
+        )
+        overflow = len(self._react_transcripts) - self.config.mining_max_transcripts
+        if overflow > 0:
+            del self._react_transcripts[:overflow]
+
+    def mine_scenario_candidates(self) -> list[str]:
+        """Cluster logged ReAct transcripts into plan_store candidates (D5).
+
+        Call this periodically from an operator-driven background task —
+        the framework has no built-in scheduler. Drains the transcript log
+        on every call: a tool-chain shape that hasn't yet recurred
+        ``mining_min_cluster_size`` times within one batch is dropped with
+        it rather than held over, mirroring how the Planner path treats a
+        one-off request — not enough evidence yet, cheap to observe again
+        on the next batch. Mined candidates land in the same reviewable
+        ``plan_store`` a planner-generated candidate would, unapproved and
+        unpromoted until a developer (or the existing rule tracks) acts.
+        """
+        touched = self.transcript_miner.mine(self._react_transcripts, self.plan_store)
+        self._react_transcripts.clear()
+        return touched
 
     async def _direct_response(
         self, context: SessionContext, adapter: SSEStreamAdapter | None = None
