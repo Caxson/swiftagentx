@@ -27,10 +27,17 @@ from .planner import GeneratedPlan, PlanStore, plan_shape, sanitize_intent
 
 @dataclass
 class ReactTranscript:
-    """One completed ReAct run's executed tool-call sequence."""
+    """One completed ReAct run's executed tool-call sequence.
+
+    ``baseline_output`` is the answer ReAct actually returned to the user
+    for this request (direct tool output or synthesized final answer) —
+    the ground truth D6's replay eval gate (``core/replay_eval.py``)
+    compares a candidate chain's deterministic replay against.
+    """
 
     user_input: str
     actions: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    baseline_output: str = ""
 
 
 class TranscriptMiner:

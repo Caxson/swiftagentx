@@ -61,9 +61,20 @@
   供外部调度周期性调用，按 `mining_min_cluster_size` 聚类同 shape 的历史请求、
   产出候选后清空本批日志。
 
-- [ ] **D6 · 回放评测门（replay eval gate）**
+- [x] **D6 · 回放评测门（replay eval gate）**（完成于 2026-08-10）
   候选链用历史真实请求 replay，输出与 ReAct 基线做一致性打分；达标才进入审批队列，报告落盘。
   验证：eval 报告生成 + 阈值判定单测。
+  实现：新增 `core/replay_eval.py`（`ReplayEvaluator` + `ReplayReport` +
+  `select_cases` + `save_report`）。`ReactTranscript`（D5）加
+  `baseline_output` 字段记录 ReAct 实际给用户的答案；`Agent` 新增
+  `enable_replay_eval`（默认关闭）开启的滚动 `_eval_transcripts` 日志，与
+  D5 的挖矿日志共用同一条 `_record_react_transcript` 记录点但各自独立开
+  关。`Agent.replay_eval_plan(plan_id)`（同 D5 一样由外部调度周期调用）
+  用 `ToolExecutor` 原样重放候选的历史工具链，取最后一步输出与该请求的
+  `baseline_output` 用 `retrieval.tokenize` 做 Jaccard 一致性打分；
+  `eval_pass_rate_threshold` 达标才自动 `plan_store.approve()` 打开复用
+  闸门，报告通过 `Workspace`（D3/D4 同一存储原语）落盘到
+  `eval_reports/{plan_id}.json`。
 
 - [ ] **D7 · 自动转正 gate**
   规则化自动 promote：连续 N 次成功 + eval 达标 + 显式开启开关时跳过人工审批；默认关闭。

@@ -88,6 +88,20 @@ class SwiftAgentConfig(BaseModel):
     mining_min_cluster_size: int = 3
     mining_max_transcripts: int = 500
 
+    # Replay eval gate (D6, opt-in). When on, every transcript recorded for
+    # mining is also kept in a rolling eval log; Agent.replay_eval_plan()
+    # (operator-driven, same as mine_scenario_candidates()) replays a
+    # candidate's tool chain against its matching historical requests and
+    # scores agreement against what ReAct actually answered. A candidate
+    # that clears `eval_pass_rate_threshold` is auto-approved into the
+    # reuse queue (PlanStore.approve); otherwise it stays an unapproved
+    # candidate awaiting manual review, same as today.
+    enable_replay_eval: bool = False
+    eval_max_transcripts: int = 200
+    eval_min_cases: int = 1
+    eval_agreement_threshold: float = 0.5
+    eval_pass_rate_threshold: float = 0.7
+
     # Context offload (v0.5): tool results whose stringified form exceeds
     # this many characters are written to the session workspace instead of
     # being inlined into the ReAct / Scenario context sent to the LLM; the

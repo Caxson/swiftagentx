@@ -50,6 +50,7 @@ from .parameter import ParameterManager
 from .pipeline import RequestPipeline
 from .planner import Planner, PlanStore
 from .prompt import PromptManager
+from .replay_eval import ReplayEvaluator, ReplayReport, save_report, select_cases
 from .retrieval import ScenarioRetriever
 from .router import IntentLevel, IntentResult, IntentRouter
 from .skills import Skill, SkillRegistry
@@ -141,6 +142,12 @@ class Agent:
             max_steps=self.planner.max_steps,
         )
         self._react_transcripts: list[ReactTranscript] = []
+        self.replay_evaluator = ReplayEvaluator(
+            self.tool_executor,
+            agreement_threshold=self.config.eval_agreement_threshold,
+            pass_rate_threshold=self.config.eval_pass_rate_threshold,
+        )
+        self._eval_transcripts: list[ReactTranscript] = []
         self.pipeline = RequestPipeline()
         self.termination_checker = TerminationChecker()
         self.hooks = HookRegistry()
@@ -1243,21 +1250,21 @@ class Agent:
 
                 # Check if the tool returned a direct output
                 if result.success and result.output_type == ToolOutputType.DIRECT_OUTPUT:
-                    self._record_react_transcript(context, executed_actions)
+                    self._record_react_transcript(context, executed_actions, baseline_output=observation)
                     return observation
             else:
                 # No action — extract answer from thought
                 answer = self._extract_final_answer(thought)
                 if answer:
                     await _dispatch_iter(HookEvent.AFTER_REACT_ITER, react_iteration=iteration + 1)
-                    self._record_react_transcript(context, executed_actions)
+                    self._record_react_transcript(context, executed_actions, baseline_output=answer)
                     return answer
 
             await _dispatch_iter(HookEvent.AFTER_REACT_ITER, react_iteration=iteration + 1)
 
         # Generate final answer from accumulated context
         final_answer = await self._generate_final_answer(context, model, accumulated_context)
-        self._record_react_transcript(context, executed_actions)
+        self._record_react_transcript(context, executed_actions, baseline_output=final_answer)
         return final_answer
 
     async def _generate_thought(
@@ -1645,22 +1652,38 @@ class Agent:
         return self.plan_store.to_scenario_config(plan_id)
 
     def _record_react_transcript(
-        self, context: SessionContext, actions: list[tuple[str, dict[str, Any]]],
+        self,
+        context: SessionContext,
+        actions: list[tuple[str, dict[str, Any]]],
+        baseline_output: str = "",
     ) -> None:
-        """Log a completed ReAct run's tool chain for D5 transcript mining.
+        """Log a completed ReAct run's tool chain for D5 mining / D6 replay eval.
 
-        No-op unless ``enable_transcript_mining`` is on, or the run didn't
-        chain at least 2 successful tool calls (nothing to mine). Bounded
-        FIFO log; ``mine_scenario_candidates()`` drains it.
+        No-op for either log unless its own config flag is on, or the run
+        didn't chain at least 2 successful tool calls (nothing to mine or
+        replay). Both are bounded FIFO logs: ``mine_scenario_candidates()``
+        drains the mining log; the eval log rolls over on
+        ``eval_max_transcripts`` and is read (not drained) by
+        ``replay_eval_plan()``.
         """
-        if not self.config.enable_transcript_mining or len(actions) < 2:
+        if len(actions) < 2:
             return
-        self._react_transcripts.append(
-            ReactTranscript(user_input=context.user_input, actions=list(actions))
-        )
-        overflow = len(self._react_transcripts) - self.config.mining_max_transcripts
-        if overflow > 0:
-            del self._react_transcripts[:overflow]
+        if self.config.enable_transcript_mining:
+            self._react_transcripts.append(
+                ReactTranscript(user_input=context.user_input, actions=list(actions))
+            )
+            overflow = len(self._react_transcripts) - self.config.mining_max_transcripts
+            if overflow > 0:
+                del self._react_transcripts[:overflow]
+        if self.config.enable_replay_eval:
+            self._eval_transcripts.append(ReactTranscript(
+                user_input=context.user_input,
+                actions=list(actions),
+                baseline_output=baseline_output,
+            ))
+            overflow = len(self._eval_transcripts) - self.config.eval_max_transcripts
+            if overflow > 0:
+                del self._eval_transcripts[:overflow]
 
     def mine_scenario_candidates(self) -> list[str]:
         """Cluster logged ReAct transcripts into plan_store candidates (D5).
@@ -1678,6 +1701,44 @@ class Agent:
         touched = self.transcript_miner.mine(self._react_transcripts, self.plan_store)
         self._react_transcripts.clear()
         return touched
+
+    async def replay_eval_plan(self, plan_id: str) -> ReplayReport | None:
+        """Replay-eval gate (D6): score a candidate plan against its
+        matching historical requests before trusting it with auto-reuse.
+
+        Call this periodically from the same operator-driven background
+        task that calls ``mine_scenario_candidates()`` — the framework has
+        no built-in scheduler here either. Returns ``None`` when the plan
+        is unknown or has fewer than ``eval_min_cases`` matching historical
+        transcripts logged (nothing to judge yet); otherwise replays every
+        matching case's recorded tool chain through ``tool_executor``,
+        scores each replay's output against what ReAct actually answered,
+        writes the report to the plan's workspace, and — only when the
+        pass rate clears ``eval_pass_rate_threshold`` — opens the reuse
+        gate via ``plan_store.approve()`` so the candidate starts serving
+        matching requests without further manual review.
+        """
+        plan = self.plan_store.get(plan_id)
+        if plan is None:
+            return None
+        cases = select_cases(plan, self._eval_transcripts)
+        if len(cases) < self.config.eval_min_cases:
+            return None
+
+        eval_context = SessionContext(
+            session_id=f"replay_eval_{plan_id}", user_id="replay_eval", user_input="",
+        )
+        report = await self.replay_evaluator.evaluate(plan, cases, eval_context)
+
+        ws = await self.workspace_backend.open(eval_context.session_id)
+        try:
+            await save_report(ws, report)
+        finally:
+            await ws.close()
+
+        if report.verdict:
+            self.plan_store.approve(plan_id)
+        return report
 
     async def _direct_response(
         self, context: SessionContext, adapter: SSEStreamAdapter | None = None
