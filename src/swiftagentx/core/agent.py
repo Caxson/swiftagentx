@@ -1615,10 +1615,20 @@ class Agent:
         source_query: str = "",
         slots: dict[str, str] | None = None,
     ) -> None:
-        """Bookkeeping after a plan run succeeds; rule-track auto-promotion."""
+        """Bookkeeping after a plan run succeeds; rule-track auto-promotion.
+
+        With ``plan_promote_requires_eval`` on (D7), successes alone are
+        not enough — the plan must also have cleared replay eval (D6)
+        before the rule track skips manual review.
+        """
         promotable = self.plan_store.record_success(plan_id, source_query, slots)
-        if promotable and self.config.plan_auto_promote:
-            self.promote_plan(plan_id)
+        if not (promotable and self.config.plan_auto_promote):
+            return
+        if self.config.plan_promote_requires_eval:
+            plan = self.plan_store.get(plan_id)
+            if plan is None or not plan.eval_passed:
+                return
+        self.promote_plan(plan_id)
 
     def approve_plan(self, plan_id: str) -> bool:
         """Open the reuse gate for a candidate plan (manual track of
@@ -1716,7 +1726,9 @@ class Agent:
         writes the report to the plan's workspace, and — only when the
         pass rate clears ``eval_pass_rate_threshold`` — opens the reuse
         gate via ``plan_store.approve()`` so the candidate starts serving
-        matching requests without further manual review.
+        matching requests without further manual review, and records the
+        passing verdict (``plan_store.mark_eval_passed()``) that the D7
+        promotion gate checks before auto-promoting.
         """
         plan = self.plan_store.get(plan_id)
         if plan is None:
@@ -1738,6 +1750,7 @@ class Agent:
 
         if report.verdict:
             self.plan_store.approve(plan_id)
+            self.plan_store.mark_eval_passed(plan_id)
         return report
 
     async def _direct_response(

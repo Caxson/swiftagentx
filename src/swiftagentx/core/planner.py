@@ -187,6 +187,11 @@ class CachedPlan(BaseModel):
     # auto_reuse stores approve on add; otherwise a developer approves.
     approved: bool = False
     promoted: bool = False
+    # Set when a replay-eval report (D6) verdicts this plan's chain as
+    # agreeing with ReAct's own answers. Independent of `approved` — eval
+    # can pass without auto-reuse being open, or vice versa via manual
+    # approve(). Consumed by the D7 promotion gate.
+    eval_passed: bool = False
 
 
 class PlanStore:
@@ -203,7 +208,10 @@ class PlanStore:
     2. PROMOTION to Scenario — after ``promote_after`` clean successes the
        plan is reported promotable (the agent auto-registers it when
        ``plan_auto_promote`` is on); otherwise ``Agent.promote_plan()`` /
-       ``export_plan_scenario()`` keep it a developer decision.
+       ``export_plan_scenario()`` keep it a developer decision. When the
+       agent's ``plan_promote_requires_eval`` is also on (D7), the rule
+       track additionally withholds promotion until the plan's replay-eval
+       report (D6) has verdicted it — see ``mark_eval_passed``.
 
     Matching uses anchor containment over the same CJK-aware tokens the
     scenario prefilter uses: anchors are stored with their slot values
@@ -318,6 +326,13 @@ class PlanStore:
         if plan is not None:
             plan.approved = True  # promotion implies the reuse gate
             plan.promoted = True
+
+    def mark_eval_passed(self, plan_id: str) -> None:
+        """Record that a replay-eval report (D6) verdicted this plan's
+        chain as agreeing with ReAct — the D7 promotion gate's other leg."""
+        plan = self._plans.get(plan_id)
+        if plan is not None:
+            plan.eval_passed = True
 
     def get(self, plan_id: str) -> CachedPlan | None:
         return self._plans.get(plan_id)

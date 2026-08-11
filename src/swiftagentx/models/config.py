@@ -75,6 +75,12 @@ class SwiftAgentConfig(BaseModel):
     # (Agent.promote_plan / export_plan_scenario).
     plan_auto_promote: bool = False
     plan_promote_after: int = 3
+    # D7 (opt-in). When True, Gate 2's rule track also requires the plan's
+    # latest replay-eval report (D6, `enable_replay_eval`) to have passed
+    # before auto-promoting — successes alone no longer skip manual review.
+    # No effect unless `plan_auto_promote` is also on; default False keeps
+    # the successes-only rule track above unchanged.
+    plan_promote_requires_eval: bool = False
 
     # Transcript mining (D5, opt-in). When on, every successful ReAct run
     # with a 2+ tool chain is logged in-memory; Agent.mine_scenario_candidates()

@@ -76,9 +76,16 @@
   闸门，报告通过 `Workspace`（D3/D4 同一存储原语）落盘到
   `eval_reports/{plan_id}.json`。
 
-- [ ] **D7 · 自动转正 gate**
+- [x] **D7 · 自动转正 gate**（完成于 2026-08-11）
   规则化自动 promote：连续 N 次成功 + eval 达标 + 显式开启开关时跳过人工审批；默认关闭。
   验证：端到端单测（候选 → eval → 自动转正 → Scenario 命中）。
+  实现：`CachedPlan` 加 `eval_passed` 字段，`PlanStore.mark_eval_passed()` 由
+  `Agent.replay_eval_plan()` 在 `report.verdict` 为真时与 `approve()` 一并调用
+  （`core/planner.py` / `core/agent.py`）。已有的 Gate 2 rule track
+  （`plan_auto_promote` + `plan_promote_after`，仅看连续成功次数）在新增的
+  `plan_promote_requires_eval`（默认关闭）打开后，`Agent._after_plan_success()`
+  额外要求 `plan.eval_passed` 为真才会调用 `promote_plan()`；关闭时行为与之前
+  完全一致。
 
 - [ ] **D8 · Agent Skills（SKILL.md）标准 loader**
   读取 Anthropic Agent Skills 目录格式（SKILL.md + 资源），映射到现有 Skill-in-ReAct 机制，生态技能包直接可用。
