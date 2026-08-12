@@ -417,6 +417,14 @@ class Agent:
         """
         return self.skills.load_dir(directory)
 
+    def load_agent_skills(self, directory: str | Any) -> list[str]:
+        """Load Anthropic Agent Skills packages (``SKILL.md`` + resources)
+        under ``directory`` (recursive).
+
+        Returns the names of the skills successfully registered.
+        """
+        return self.skills.load_agent_skills(directory)
+
     async def invoke_skill(
         self,
         name: str,

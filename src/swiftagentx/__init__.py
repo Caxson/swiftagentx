@@ -46,7 +46,12 @@ from .core.retrieval import (
     ScenarioRetriever,
 )
 from .core.router import IntentLevel, IntentResult, IntentRouter
-from .core.skills import Skill, SkillRegistry, parse_skill_markdown
+from .core.skills import (
+    Skill,
+    SkillRegistry,
+    parse_agent_skill_markdown,
+    parse_skill_markdown,
+)
 from .core.subagent import (
     SubAgentInvocation,
     SubAgentManager,
@@ -101,7 +106,7 @@ __all__ = [
     "SubAgentRole", "SubAgentRequest", "SubAgentResult",
     "SubAgentManager", "SubAgentInvocation",
     # v0.3 skills
-    "Skill", "SkillRegistry", "parse_skill_markdown",
+    "Skill", "SkillRegistry", "parse_skill_markdown", "parse_agent_skill_markdown",
     # v0.3 workspace
     "Workspace", "WorkspaceBackend",
     "InMemoryWorkspaceBackend", "LocalDiskWorkspaceBackend",

@@ -85,15 +85,50 @@ def parse_skill_markdown(text: str, *, source_path: Path | None = None) -> Skill
     source_path with a filename stem we can fall back to).
     """
     frontmatter, body = _split_frontmatter(text)
+    fallback_name = source_path.stem if source_path is not None else None
+    return _build_skill(frontmatter, body, source_path=source_path,
+                         fallback_name=fallback_name)
 
+
+# Anthropic Agent Skills frontmatter uses hyphenated keys; SwiftAgentX's own
+# format uses underscores. Translate the ones we recognize before building.
+_AGENT_SKILL_KEY_ALIASES = {"allowed-tools": "allowed_tools"}
+
+
+def parse_agent_skill_markdown(text: str, *, source_path: Path | None = None) -> Skill:
+    """
+    Parse a ``Skill`` from a ``SKILL.md`` file written in the Anthropic Agent
+    Skills format (YAML frontmatter with ``name`` / ``description`` and,
+    optionally, hyphenated keys like ``allowed-tools``).
+
+    Falls back to the *parent directory name* (not the ``SKILL.md`` filename
+    stem) when ``name`` is missing from frontmatter, matching how Agent
+    Skills packages are identified by their directory name.
+    """
+    frontmatter, body = _split_frontmatter(text)
+    for alias, canonical in _AGENT_SKILL_KEY_ALIASES.items():
+        if alias in frontmatter:
+            frontmatter[canonical] = frontmatter.pop(alias)
+    fallback_name = source_path.parent.name if source_path is not None else None
+    return _build_skill(frontmatter, body, source_path=source_path,
+                         fallback_name=fallback_name)
+
+
+def _build_skill(
+    frontmatter: dict[str, Any],
+    body: str,
+    *,
+    source_path: Path | None,
+    fallback_name: str | None,
+) -> Skill:
     name = frontmatter.get("name")
     if name is None:
-        if source_path is None:
+        if fallback_name is None:
             raise ValueError(
                 "Skill markdown has no 'name' in frontmatter and no source_path "
                 "to fall back to"
             )
-        name = source_path.stem
+        name = fallback_name
 
     description = frontmatter.pop("description", "") if frontmatter else ""
     when_to_use = frontmatter.pop("when_to_use", "") if frontmatter else ""
@@ -235,6 +270,36 @@ class SkillRegistry:
                                              source_path=path)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Skipping malformed skill %s: %s", path, exc)
+                continue
+            self.register(skill)
+            registered.append(skill.name)
+        return registered
+
+    def load_agent_skills(self, directory: str | Path) -> list[str]:
+        """Load Anthropic Agent Skills packages under ``directory`` (recursive).
+
+        Each package is a subdirectory containing a ``SKILL.md`` file; any
+        other files alongside it (``scripts/``, ``references/``, ``assets/``,
+        etc.) are left where they are — resolve them via
+        ``skill.source_path.parent`` since that points at the ``SKILL.md``
+        file inside the package directory. Directories without a
+        ``SKILL.md`` (including ones holding unrelated ``*.md`` files) are
+        not registered as skills.
+
+        Returns the list of skill names successfully registered.
+        """
+        d = Path(directory)
+        if not d.exists():
+            logger.warning("Agent Skills dir %s does not exist", d)
+            return []
+        registered: list[str] = []
+        for skill_md in sorted(d.rglob("SKILL.md")):
+            try:
+                skill = parse_agent_skill_markdown(
+                    skill_md.read_text(encoding="utf-8"), source_path=skill_md,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Skipping malformed Agent Skill %s: %s", skill_md, exc)
                 continue
             self.register(skill)
             registered.append(skill.name)

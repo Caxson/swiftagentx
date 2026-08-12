@@ -181,6 +181,9 @@ Scenario chains practical:
   focused sub-agent with isolated context. Parallel dispatch supported.
 - **Skill-in-ReAct** — Markdown-defined workflows the ReAct loop can pull in
   on demand (different from Scenarios, which are pre-compiled and fast).
+  `Agent.load_agent_skills(dir)` loads Anthropic Agent Skills packages
+  (`SKILL.md` + resource files) directly, so ecosystem skill packs work
+  without conversion.
 - **Worktree-style workspace** — File sandbox per session for agents that
   generate documents.
 - **Cache-friendly prompt order** — Anthropic / OpenAI prompt cache
@@ -891,6 +894,8 @@ SwiftAgentX 0.4.x 已经包含让动态 Scenario 场景链真正可落地的 202
   隔离的专项子 Agent。支持并行调度。
 - **Skill-in-ReAct** — ReAct 循环可以按需调用的 markdown 定义的工作流
   （与 Scenario 互补：Scenario 预编译且快，Skill 通用且解释执行）。
+  `Agent.load_agent_skills(dir)` 直接读取 Anthropic Agent Skills 标准目录格式
+  （`SKILL.md` + 资源文件），生态技能包无需转换即可使用。
 - **Worktree-style 工作目录** — 为生成文档的 Agent 提供每会话沙箱。
 - **Cache-friendly prompt 顺序** — Anthropic / OpenAI prompt cache 优化
   内置到框架。

@@ -22,8 +22,11 @@ from swiftagentx import Agent, DummyModelClient, SwiftAgentConfig
 from swiftagentx.core.skills import (
     Skill,
     SkillRegistry,
+    parse_agent_skill_markdown,
     parse_skill_markdown,
 )
+
+FIXTURE_AGENT_SKILLS_DIR = Path(__file__).parent / "fixtures" / "agent_skills"
 
 # ---------------------------------------------------------------------------
 # Parser
@@ -211,3 +214,109 @@ async def test_agent_load_skills_picks_up_directory(tmp_path: Path) -> None:
     loaded = agent.load_skills(tmp_path)
     assert loaded == ["s"]
     assert agent.skills.get("s") is not None
+
+
+# ---------------------------------------------------------------------------
+# D8: Anthropic Agent Skills (SKILL.md) format loader
+# ---------------------------------------------------------------------------
+
+
+def test_parse_agent_skill_maps_hyphenated_allowed_tools() -> None:
+    md = (
+        "---\n"
+        "name: pdf-tools\n"
+        "description: Use for PDF extraction\n"
+        "allowed-tools: [read_file, write_file]\n"
+        "license: Apache-2.0\n"
+        "---\n"
+        "\n"
+        "1. Extract text.\n"
+    )
+    skill = parse_agent_skill_markdown(md)
+    assert skill.name == "pdf-tools"
+    assert skill.allowed_tools == ["read_file", "write_file"]
+    assert skill.metadata.get("license") == "Apache-2.0"
+
+
+def test_parse_agent_skill_falls_back_to_parent_dir_name(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("---\ndescription: no name field\n---\nbody")
+
+    skill = parse_agent_skill_markdown(skill_md.read_text(), source_path=skill_md)
+    assert skill.name == "my-skill"
+    assert skill.source_path == skill_md
+
+
+def test_registry_load_agent_skills_finds_nested_skill_md(tmp_path: Path) -> None:
+    (tmp_path / "pkg-a").mkdir()
+    (tmp_path / "pkg-a" / "SKILL.md").write_text("---\nname: pkg-a\n---\nbody A")
+    (tmp_path / "pkg-a" / "references").mkdir()
+    (tmp_path / "pkg-a" / "references" / "doc.md").write_text("not a skill")
+    (tmp_path / "pkg-b").mkdir()
+    (tmp_path / "pkg-b" / "SKILL.md").write_text("---\nname: pkg-b\n---\nbody B")
+
+    r = SkillRegistry()
+    loaded = r.load_agent_skills(tmp_path)
+    assert sorted(loaded) == ["pkg-a", "pkg-b"]
+    # The reference doc is not itself registered as a skill.
+    assert r.get("doc") is None
+
+
+def test_registry_load_agent_skills_skips_dirs_without_skill_md(tmp_path: Path) -> None:
+    (tmp_path / "not-a-skill").mkdir()
+    (tmp_path / "not-a-skill" / "notes.md").write_text("random markdown")
+
+    r = SkillRegistry()
+    assert r.load_agent_skills(tmp_path) == []
+
+
+def test_registry_load_agent_skills_missing_dir_returns_empty(tmp_path: Path) -> None:
+    r = SkillRegistry()
+    assert r.load_agent_skills(tmp_path / "nope") == []
+
+
+def test_registry_load_agent_skills_source_path_resolves_resource_dir(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "pkg-a"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: pkg-a\n---\nbody")
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "run.py").write_text("# resource")
+
+    r = SkillRegistry()
+    r.load_agent_skills(tmp_path)
+    skill = r.get("pkg-a")
+    assert skill is not None
+    resource_dir = skill.source_path.parent
+    assert (resource_dir / "scripts" / "run.py").exists()
+
+
+def test_load_agent_skills_real_fixture_sample() -> None:
+    """Loads the real pdf-tools SKILL.md fixture (Anthropic Agent Skills format)."""
+    r = SkillRegistry()
+    loaded = r.load_agent_skills(FIXTURE_AGENT_SKILLS_DIR)
+    assert loaded == ["pdf-tools"]
+
+    skill = r.get("pdf-tools")
+    assert skill is not None
+    assert skill.allowed_tools == ["read_file", "write_file"]
+    assert skill.metadata.get("license") == "Apache-2.0"
+    resource_dir = skill.source_path.parent
+    assert (resource_dir / "scripts" / "extract.py").exists()
+    assert (resource_dir / "references" / "split_notes.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_agent_load_agent_skills_and_invoke_end_to_end() -> None:
+    """Real SKILL.md sample loaded and triggered through the ReAct invoke path."""
+    agent = Agent(model=DummyModelClient(api_key="k", model="d"),
+                  config=SwiftAgentConfig(memory_enable_topic_change_hook=False))
+    loaded = agent.load_agent_skills(FIXTURE_AGENT_SKILLS_DIR)
+    assert loaded == ["pdf-tools"]
+
+    output = await agent.invoke_skill(
+        "pdf-tools", args={"input": "report.pdf"}, context_input="user wants text extracted",
+    )
+    assert isinstance(output, str)
+    assert output

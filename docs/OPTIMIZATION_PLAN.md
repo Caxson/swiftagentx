@@ -87,9 +87,20 @@
   额外要求 `plan.eval_passed` 为真才会调用 `promote_plan()`；关闭时行为与之前
   完全一致。
 
-- [ ] **D8 · Agent Skills（SKILL.md）标准 loader**
+- [x] **D8 · Agent Skills（SKILL.md）标准 loader**（完成于 2026-08-12）
   读取 Anthropic Agent Skills 目录格式（SKILL.md + 资源），映射到现有 Skill-in-ReAct 机制，生态技能包直接可用。
   验证：加载真实 SKILL.md 样例并在 ReAct 中触发执行。
+  实现：`core/skills.py` 新增 `parse_agent_skill_markdown`（`_build_skill` 从
+  `parse_skill_markdown` 中提取复用，无新分叉逻辑），把 Agent Skills 的连字符
+  frontmatter 键（`allowed-tools` 等）映射到现有下划线字段，`name` 缺失时回退
+  到目录名而非 `SKILL.md` 文件名。`SkillRegistry.load_agent_skills(dir)` 递归
+  查找每个 `SKILL.md`（而非现有 `load_dir` 的扁平 `*.md` glob），只把含
+  `SKILL.md` 的目录注册为技能，`scripts/`、`references/` 等同目录资源文件
+  原样保留，通过已有的 `skill.source_path.parent` 即可解析，无需新增字段。
+  `Agent.load_agent_skills(dir)` 接入 Agent 层，与 `load_skills` 对称。
+  测试新增真实样例 fixture（`tests/fixtures/agent_skills/pdf-tools/`，含
+  `SKILL.md` + `scripts/` + `references/`）验证端到端加载与 `invoke_skill`
+  触发执行。
 
 - [ ] **D9 · 文档与 benchmark 收尾**
   README（中英同步）、CHANGELOG、architecture 文档更新；重跑 benchmark 更新数据与图。
