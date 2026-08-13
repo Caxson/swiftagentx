@@ -102,9 +102,18 @@
   `SKILL.md` + `scripts/` + `references/`）验证端到端加载与 `invoke_skill`
   触发执行。
 
-- [ ] **D9 · 文档与 benchmark 收尾**
+- [x] **D9 · 文档与 benchmark 收尾**（完成于 2026-08-13）
   README（中英同步）、CHANGELOG、architecture 文档更新；重跑 benchmark 更新数据与图。
   验证：`pip install -e ".[dev]"` 全量测试通过 + benchmark 图表更新。
+  实现：README 中英两段的「Current v0.4 building blocks / 当前 v0.4 能力
+  底座」补齐 D1（并行步骤组）、D2（组失败语义/条件边）、D3+D3b（context
+  卸载）、D5（挖矿 loop）、D6（回放评测门）、D7（eval 强约束自动转正）
+  六项此前完全没写进 README 的能力（D4 checkpoint 同批一并补上，D8 skill
+  loader 此前已同步，本次未重复）；`CHANGELOG.md` `[Unreleased]` 新增
+  对应条目并指回本文件的逐日实现记录；`docs/architecture.md` 新增
+  「9. Scenario 引擎进阶能力」小节，指回本文件而非重复展开设计细节。
+  benchmark 数据与图表重跑待本地补测（云端环境无法跑真实 LLM/网络延迟
+  对比，`benchmarks/` 现有的 mock-LLM 模式已随全量单测覆盖，未变化）。
 
 ## 明确不做（红线）
 

@@ -173,6 +173,25 @@ class MyAgent(Agent):
     async def on_request_end(self, context, response): ...
 ```
 
+### 9. Scenario 引擎进阶能力（daily-opt D1–D8）
+
+`tools/scenario.py` 的 `ScenarioEngine` 在上面的基础执行模型上叠加了几层
+能力，`core/agent.py` 按需接入，全部默认关闭/透明，不改变未开启时的行为：
+
+- **并行步骤组**：`tool_chain` 的一项可以是 `list[ToolChainStep]`（无
+  依赖 step 组），`asyncio.gather` fan-out 后 join；`on_group_failure`
+  控制组内部分失败是 `fail_fast` 还是 `best_effort`。
+- **断点续跑**：`ScenarioCheckpoint` 每个组 join 后落盘到 `Workspace`，
+  进程重启后可从最后完成的分组恢复。
+- **Context 卸载**：超阈值 tool 输出与大号 `direct` 答案只写一次
+  workspace，prompt 里留引用 + 摘要，支持分块回读。
+- **候选挖矿 + 回放评测 + 自动转正**：`core/miner.py` 把 ReAct 实跑的
+  工具链聚类成 Planner 候选，`core/replay_eval.py` 用历史请求重放候选
+  并与 ReAct 基线打分，两者共用 `core/planner.py` 的 `PlanStore` 复用/
+  转正闸门；`plan_promote_requires_eval` 可要求自动转正必须先过评测。
+
+详细设计与验证方式见 `docs/OPTIMIZATION_PLAN.md`（D1–D8）。
+
 ## 模块依赖关系
 
 ```

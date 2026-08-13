@@ -190,6 +190,37 @@ Scenario chains practical:
   optimization wired into the framework.
 - **Lazy tool loading** — When a registry grows past a threshold, LIGHT
   model picks the relevant category before HEAVY sees schemas.
+- **Parallel scenario steps** — a `tool_chain` entry can be a list of
+  independent steps instead of a single one; they fan out with
+  `asyncio.gather` and join before the chain continues. Still a plain
+  list-of-lists — no graph/DAG API. `on_group_failure` picks
+  `"fail_fast"` (default) or `"best_effort"` for partial-failure groups;
+  each step's `condition` is evaluated once the group has joined.
+- **Scenario checkpoint / resume** — long chains persist
+  `{group_index, collected, failed_steps}` to the `Workspace` store after
+  every step-group join. A crash or human-approval pause can resume from
+  the last completed group instead of re-running the whole chain; the
+  checkpoint clears once the chain finishes (including a best-effort
+  partial completion).
+- **Tool-result context offload** — tool outputs (and large `direct`
+  answers echoed into L2 memory) above a size threshold are written to
+  the workspace once; the prompt only carries a reference + preview, with
+  chunked, offset-paginated read-back on demand. Keeps long-running
+  sessions from re-paying full-size tool output in every subsequent turn.
+- **Transcript mining** (`enable_transcript_mining`) — the ReAct loop can
+  log its own successful ≥2-step tool chains; `Agent.mine_scenario_candidates()`
+  clusters the repeated ones into Planner candidates through the same
+  `PlanStore` gates plans already go through — no separate approval path.
+- **Replay eval gate** (`enable_replay_eval`) — `Agent.replay_eval_plan(plan_id)`
+  replays a candidate's historical tool chain and scores it against the
+  ReAct baseline answer it's meant to replace; a report lands in the
+  workspace and a pass rate above `eval_pass_rate_threshold` auto-opens
+  the reuse gate.
+- **Rule-based auto-promotion, eval-gated** — `plan_promote_requires_eval`
+  makes the existing "N consecutive successes" auto-promotion rule also
+  require a passing replay-eval report before a plan graduates into a
+  Scenario. Off by default; existing success-count-only behavior is
+  unchanged when it's off.
 
 ## Installation
 
@@ -901,6 +932,30 @@ SwiftAgentX 0.4.x 已经包含让动态 Scenario 场景链真正可落地的 202
   内置到框架。
 - **Tool 延迟加载** — 当 registry 数量超过阈值时，LIGHT 模型先挑类别
   再让 HEAVY 看 schema。
+- **Scenario 并行步骤组** — `tool_chain` 里的一项可以是一组无依赖步骤而非
+  单步，用 `asyncio.gather` fan-out 后 join 再继续。数据结构仍是 plain
+  list-of-lists，不引入图/DAG API。`on_group_failure` 可选
+  `"fail_fast"`（默认）或 `"best_effort"`；每个 step 的 `condition` 在
+  组 join 之后统一求值。
+- **Scenario 断点续跑** — 长链在每个 step-group join 后把
+  `{group_index, collected, failed_steps}` 落盘到 `Workspace` 存储。进程
+  崩溃或人工审批中断后，可从最后完成的分组恢复，无需重跑整条链；链跑完
+  （含 best_effort 容错完成）后 checkpoint 自动清空。
+- **Tool 大结果 context 卸载** — 超过阈值的 tool 输出（以及回灌 L2
+  memory 的大号 `direct` 答案）只写一次 workspace，prompt 中只保留引用 +
+  摘要，按需分块、offset 分页回读。避免长会话里同一份大结果在后续每轮里
+  被重复整段占用 context。
+- **挖矿 loop**（`enable_transcript_mining`） — ReAct 循环可记录自己成功
+  执行的 ≥2 步工具链；`Agent.mine_scenario_candidates()` 把重复出现的
+  链路聚类成 Planner 候选，走与手写计划完全相同的 `PlanStore` 复用/转正
+  审核门，不额外开一条通道。
+- **回放评测门**（`enable_replay_eval`） — `Agent.replay_eval_plan(plan_id)`
+  用候选的历史工具链重放，与它本应替代的 ReAct 基线答案做一致性打分；
+  报告落盘到 workspace，pass rate 达到 `eval_pass_rate_threshold` 会自动
+  打开复用闸门。
+- **规则化自动转正（eval 强约束）** — `plan_promote_requires_eval` 让已有的
+  "连续 N 次成功"自动转正规则额外要求一份通过的回放评测报告才放行转正；
+  默认关闭，关闭时只看成功次数的行为保持不变。
 
 ## 安装
 

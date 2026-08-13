@@ -6,6 +6,48 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+### Added
+
+- **Parallel scenario step groups.** A `tool_chain` entry can now be a list
+  of independent steps instead of a single one; they fan out with
+  `asyncio.gather` and join before the chain continues (`ToolChainEntry =
+  ToolChainStep | list[ToolChainStep]`, still plain list-of-lists — no
+  graph/DAG abstraction). `ScenarioConfig.on_group_failure` picks
+  `"fail_fast"` (default) or `"best_effort"` for partial-failure groups;
+  each step's `condition` is evaluated once the group has joined.
+- **Scenario checkpoint / resume.** `ScenarioCheckpoint`
+  (`tools/scenario.py`) persists `{group_index, collected, failed_steps}`
+  to the `Workspace` store after every step-group join, so a crash or a
+  human-approval pause can resume a long chain from the last completed
+  group instead of re-running it. Cleared once the chain finishes.
+- **Tool-result context offload.** Tool outputs — and large `direct`
+  answers echoed into L2 verbatim memory — above a size threshold are
+  written to the workspace once; the prompt keeps only a reference +
+  preview, with chunked, offset-paginated read-back on demand.
+- **Transcript mining loop.** `SwiftAgentConfig.enable_transcript_mining`
+  logs the ReAct loop's own successful ≥2-step tool chains;
+  `Agent.mine_scenario_candidates()` clusters repeated shapes into Planner
+  candidates through the existing `PlanStore` reuse/promotion gates —
+  mined candidates share the same approval path as LLM-generated ones.
+- **Replay eval gate.** `SwiftAgentConfig.enable_replay_eval` plus
+  `Agent.replay_eval_plan(plan_id)` (`core/replay_eval.py`) replays a
+  candidate's historical tool chain, scores it against the ReAct baseline
+  answer via Jaccard similarity on tokenized output, and auto-opens the
+  reuse gate once `eval_pass_rate_threshold` is cleared. Reports land in
+  the workspace under `eval_reports/{plan_id}.json`.
+- **Eval-gated auto-promotion.** `plan_promote_requires_eval` (default
+  `False`) makes the existing consecutive-success auto-promotion rule
+  also require a passing replay-eval report before a plan graduates into
+  a Scenario.
+- **Agent Skills (`SKILL.md`) loader.** `SkillRegistry.load_agent_skills(dir)`
+  / `Agent.load_agent_skills(dir)` read the Anthropic Agent Skills
+  directory format (`SKILL.md` + `scripts/` / `references/` resources)
+  and map its hyphenated frontmatter onto the existing Skill-in-ReAct
+  fields, so ecosystem skill packs work without conversion.
+
+See `docs/OPTIMIZATION_PLAN.md` (items D1–D8) for the day-by-day
+implementation notes and design rationale behind each of the above.
+
 ## [0.4.1] — 2026-06-24
 
 ### Changed
