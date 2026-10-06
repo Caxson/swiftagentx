@@ -717,6 +717,7 @@ swiftagentx/
 | Document | Description |
 |---|---|
 | [Architecture](docs/architecture.md) | System overview, dual-model strategy, cache, pipeline, ReAct loop |
+| [MCP Guide](docs/guide/mcp.md) | Remote tools and anonymous Parallel search/fetch |
 | [Tools Guide](docs/guide/tools.md) | Custom tool development |
 | [Scenarios Guide](docs/guide/scenarios.md) | Scenario toolchain configuration |
 | [Knowledge Base Guide](docs/guide/knowledge-base.md) | KB integration, MemoryKB, custom backends |
