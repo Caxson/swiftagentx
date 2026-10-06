@@ -6,6 +6,12 @@ and uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in `streamable_http` MCP transport with JSON/SSE responses, session headers,
+  and bounded HTTP exchanges. Added a runnable anonymous Parallel Search MCP
+  cookbook example and MCP guide. Existing stdio and SSE selections are unchanged.
+
 ## [0.4.1] — 2026-06-24
 
 ### Changed

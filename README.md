@@ -1411,6 +1411,7 @@ swiftagentx/
 | 文档 | 内容 |
 |---|---|
 | [架构总览](docs/architecture.md) | 系统架构、双模型策略、三级缓存、Pipeline、ReAct 循环 |
+| [MCP 指南](docs/guide/mcp.md) | 远程工具与免密钥 Parallel 搜索和抓取 |
 | [工具开发指南](docs/guide/tools.md) | 自定义工具开发 |
 | [场景工具链指南](docs/guide/scenarios.md) | 场景工具链配置 |
 | [知识库指南](docs/guide/knowledge-base.md) | 知识库集成、MemoryKB 用法、自定义后端 |

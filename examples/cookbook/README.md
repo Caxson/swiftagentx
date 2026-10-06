@@ -14,6 +14,7 @@ real LLM are marked.
 | `tool_calling_workflow.py` | Custom tools, ReAct loop, error handling | No |
 | `streaming_dashboard.py` | SSE event types in action, FastAPI server | No (run with uvicorn) |
 | `dual_model_optimization.py` | LIGHT model classifies, HEAVY model answers | Real LLM recommended |
+| `parallel_search.py` | Anonymous web search and fetch through registered MCP tools (internet required) | No |
 | `scenario_routing.py` | Pre-defined toolchains skipping ReAct | No |
 
 ## How to run
