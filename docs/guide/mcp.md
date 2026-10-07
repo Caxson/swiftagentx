@@ -1,15 +1,22 @@
 # MCP tools
 
 `Agent.register_mcp_server()` discovers an MCP server's tools and adds them to
-`agent.tool_registry` as `{server_name}.{tool_name}`. These tools can be used by
-Scenarios and the ReAct loop, or executed directly from the registry.
+`agent.tool_registry` as `{server_name}.{tool_name}`. The cookbook below retrieves
+these registered tools with `agent.tool_registry.get(name)` and calls
+`await tool.execute(context, **arguments)` directly.
+
+The current ReAct agent loop cannot invoke these dotted tool names: its action
+parser reads only word characters, so `Action: parallel.web_search` is parsed as
+`parallel` rather than the registered `parallel.web_search`. Registration alone
+does not make these MCP tools callable through the agent loop. Use the direct
+registry calls shown in the cookbook.
 
 ## Parallel search and fetch
 
-Install the optional HTTP dependency:
+Install the optional HTTP dependency from this checkout:
 
 ```bash
-pip install 'swiftagentx[openai]'
+pip install -e '.[openai]'
 ```
 
 Register the anonymous [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp)
