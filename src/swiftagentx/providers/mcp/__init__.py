@@ -2,7 +2,7 @@
 
 Exposes:
 
-- :class:`MCPClient` — JSON-RPC client over stdio or SSE.
+- :class:`MCPClient` — JSON-RPC client over stdio, SSE, or Streamable HTTP.
 - :class:`MCPTool` — adapter that makes an MCP-server tool behave like a
   native :class:`swiftagentx.Tool`.
 - :class:`MCPServerSpec` — declarative config for a single server.

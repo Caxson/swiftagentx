@@ -8,7 +8,7 @@ server, list its tools, and call them. Specifically:
 - ``tools/list``           — discover available tools
 - ``tools/call``           — invoke a tool by name
 
-Two transports are supported:
+Three transports are supported:
 
 - **stdio**: launch the server as a subprocess and exchange newline-
   delimited JSON-RPC over its stdin/stdout. This is the most common
@@ -17,6 +17,10 @@ Two transports are supported:
   Server-Sent Events on ``{url}/sse``. The implementation is a thin
   wrapper around ``httpx.AsyncClient`` and only activates when ``httpx``
   is installed (it's an optional dependency).
+
+- **Streamable HTTP**: post JSON-RPC to a single MCP endpoint, accepting
+  JSON or SSE responses. Intended for request/response tools; server-initiated
+  requests and resumable streams are not supported. Requires ``httpx``.
 
 The client is intentionally small: a future v0.4 release may swap it for
 the official ``mcp`` package once it stabilizes.
@@ -44,7 +48,7 @@ class MCPClientError(RuntimeError):
     """Raised for protocol violations and unrecoverable transport failures."""
 
 
-MCPTransport = Literal["stdio", "sse"]
+MCPTransport = Literal["stdio", "sse", "streamable_http"]
 
 
 @dataclass(frozen=True)
@@ -54,7 +58,7 @@ class MCPServerSpec:
     name: str
     transport: MCPTransport = "stdio"
     command: list[str] = field(default_factory=list)   # stdio
-    url: str | None = None                              # sse
+    url: str | None = None                              # sse / streamable_http
     env: dict[str, str] = field(default_factory=dict)
     initialize_timeout: float = 10.0
     call_timeout: float = 30.0
@@ -183,6 +187,79 @@ class _SseTransport:
             await self._client.aclose()
 
 
+class _StreamableHttpTransport:
+    """Request/response subset of MCP Streamable HTTP (no background GET)."""
+
+    def __init__(self, spec: MCPServerSpec) -> None:
+        if not spec.url:
+            raise MCPClientError(f"HTTP MCP server {spec.name} has no url")
+        try:
+            import httpx  # noqa: F401
+        except ImportError as exc:
+            raise MCPClientError(
+                "HTTP transport requires: pip install 'swiftagentx[openai]'"
+            ) from exc
+        self.spec = spec
+        self._client: Any = None
+        self._inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._session_id: str | None = None
+        self.protocol_version = "2025-03-26"
+
+    async def start(self) -> None:
+        import httpx
+
+        self._client = httpx.AsyncClient(
+            timeout=None,
+            headers={
+                "User-Agent": "swiftagentx/0.4.1",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+
+    async def send(self, message: dict[str, Any]) -> None:
+        assert self._client is not None
+        headers = {}
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+        if message.get("method") != "initialize":
+            headers["MCP-Protocol-Version"] = self.protocol_version
+        async with self._client.stream("POST", self.spec.url, json=message, headers=headers) as response:
+            response.raise_for_status()
+            if message.get("method") == "initialize":
+                self._session_id = response.headers.get("mcp-session-id")
+            if "id" not in message:
+                return  # Notifications have no JSON-RPC response.
+            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+            if content_type == "application/json":
+                await response.aread()
+                payload = response.json()
+                if not isinstance(payload, dict) or payload.get("id") != message["id"]:
+                    raise MCPClientError("HTTP MCP response has no matching request id")
+                await self._inbox.put(payload)
+                return
+            if content_type != "text/event-stream":
+                raise MCPClientError(f"Unsupported HTTP MCP content type: {content_type!r}")
+            # SSE data fields may span lines; dispatch only at the event boundary.
+            data: list[str] = []
+            async for line in response.aiter_lines():
+                if line.startswith("data:"):
+                    data.append(line[5:].removeprefix(" "))
+                elif not line and data:
+                    payload = json.loads("\n".join(data))
+                    data = []
+                    if isinstance(payload, dict) and payload.get("id") == message["id"]:
+                        await self._inbox.put(payload)
+                        return
+            raise MCPClientError("HTTP MCP stream ended before the response")
+
+    async def recv(self, timeout: float) -> dict[str, Any]:
+        return await asyncio.wait_for(self._inbox.get(), timeout=timeout)
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -220,11 +297,13 @@ class MCPClient:
         self._initialized = False
 
     @staticmethod
-    def _build_transport(spec: MCPServerSpec) -> _StdioTransport | _SseTransport:
+    def _build_transport(spec: MCPServerSpec) -> _StdioTransport | _SseTransport | _StreamableHttpTransport:
         if spec.transport == "stdio":
             return _StdioTransport(spec)
         if spec.transport == "sse":
             return _SseTransport(spec)
+        if spec.transport == "streamable_http":
+            return _StreamableHttpTransport(spec)
         raise MCPClientError(f"Unsupported MCP transport: {spec.transport!r}")
 
     # ---- lifecycle ------------------------------------------------------
@@ -242,7 +321,11 @@ class MCPClient:
         await self._transport.start()
         self._started = True
         self._dispatcher = asyncio.create_task(self._dispatch_loop())
-        await self._initialize()
+        try:
+            await self._initialize()
+        except BaseException:
+            await self.close()
+            raise
 
     async def close(self) -> None:
         if self._dispatcher is not None:
@@ -296,13 +379,18 @@ class MCPClient:
         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending[rid] = fut
 
-        await self._transport.send(message)
+        async def exchange() -> dict[str, Any]:
+            await self._transport.send(message)
+            return await fut
 
         try:
-            response = await asyncio.wait_for(fut, timeout=timeout)
+            response = await asyncio.wait_for(exchange(), timeout=timeout)
         except (TimeoutError, asyncio.TimeoutError) as exc:
-            self._pending.pop(rid, None)
             raise MCPClientError(f"MCP request {method!r} timed out") from exc
+        finally:
+            self._pending.pop(rid, None)
+            if not fut.done():
+                fut.cancel()
 
         if "error" in response:
             # JSON-RPC error envelope: {"code": int, "message": str, "data"?: any}.
@@ -330,12 +418,18 @@ class MCPClient:
         result = await self._request(
             "initialize",
             {
-                "protocolVersion": self.PROTOCOL_VERSION,
+                "protocolVersion": "2025-03-26" if self.spec.transport == "streamable_http" else self.PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {"name": "swiftagentx", "version": "0.3.0"},
             },
             timeout=self.spec.initialize_timeout,
         )
+        if isinstance(self._transport, _StreamableHttpTransport):
+            self._transport.protocol_version = result.get("protocolVersion", "2025-03-26")
+            await asyncio.wait_for(
+                self._transport.send({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                timeout=self.spec.initialize_timeout,
+            )
         self._initialized = True
         logger.info(
             "MCP %s initialized: server %s, protocol %s",
